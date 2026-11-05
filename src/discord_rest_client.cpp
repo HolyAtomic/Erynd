@@ -322,6 +322,14 @@ Result<std::string, LocalValidationError> DiscordApiPathBuilder::finish() const 
     return Result<std::string, LocalValidationError>::success(path_);
 }
 
+Result<std::string, LocalValidationError> DiscordApiPathBuilder::finish(const QueryParameters& query) const {
+    auto target = finish();
+    if (!target.has_value() || query.empty()) return target;
+    target.value().push_back('?');
+    target.value() += query.serialize();
+    return target;
+}
+
 DiscordRestClient::DiscordRestClient(RestClient& rest_client, RateLimitCoordinator& coordinator,
     DiscordApiConfig config) noexcept
     : rest_client_{ rest_client }, coordinator_{ coordinator }, config_{ std::move(config) } {}
@@ -511,6 +519,19 @@ Result<HttpRequest, DiscordClientError> DiscordRestClient::build_request(
             LocalValidationIssue::token_unavailable, "bot token is unavailable or invalid")));
     }
     return Result<HttpRequest, DiscordClientError>::success(std::move(request));
+}
+
+Result<HttpRequest, DiscordClientError> DiscordRestClient::build_request_with_query(
+    std::string_view method, const DiscordApiPathBuilder& path, const QueryParameters& query,
+    const Headers& additional_headers, std::string body,
+    std::optional<SteadyClock::time_point> deadline) const {
+    auto request = build_request(method, path, additional_headers, std::move(body), deadline);
+    if (!request.has_value()) return request;
+    if (!query.empty()) {
+        request.value().target.push_back('?');
+        request.value().target += query.serialize();
+    }
+    return request;
 }
 
 } // namespace discordcpp

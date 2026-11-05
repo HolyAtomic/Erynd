@@ -6,6 +6,13 @@ discordcpp_enable_private_warnings(discordcpp_tests)
 add_test(NAME discordcpp.unit COMMAND discordcpp_tests)
 
 if(DISCORDCPP_WITH_REST_API)
+    add_executable(discordcpp_query_parameters_tests test_query_parameters.cpp)
+    target_link_libraries(discordcpp_query_parameters_tests PRIVATE discordcpp::rest_api)
+    target_compile_features(discordcpp_query_parameters_tests PRIVATE cxx_std_20)
+    set_target_properties(discordcpp_query_parameters_tests PROPERTIES CXX_EXTENSIONS OFF)
+    discordcpp_enable_private_warnings(discordcpp_query_parameters_tests)
+    add_test(NAME discordcpp.query_parameters COMMAND discordcpp_query_parameters_tests)
+
     add_executable(discordcpp_rest_api_tests test_rest_api.cpp)
     target_link_libraries(discordcpp_rest_api_tests PRIVATE discordcpp::rest_api)
     target_compile_features(discordcpp_rest_api_tests PRIVATE cxx_std_20)

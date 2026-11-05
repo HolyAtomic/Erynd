@@ -101,6 +101,18 @@ separates fixed route literals from encoded parameter segments and canonical
 Snowflake values. Request construction does not dispatch: future endpoint
 methods will continue through `RestClient` and `RateLimitCoordinator`.
 
+`QueryParameters` is a reusable REST query builder. It accepts string,
+integral, boolean, and optional values; repeated names are retained in
+insertion order. Serialization uses RFC 3986 component encoding: only ASCII
+unreserved bytes (`A-Z`, `a-z`, `0-9`, `-`, `.`, `_`, `~`) remain literal,
+all other bytes use uppercase `%HH`, and spaces become `%20` (never `+`). Names
+and values must be valid UTF-8. Empty names are rejected, and empty values
+require the explicit `EmptyQueryValuePolicy::allow` option. An absent optional
+value emits no pair. `DiscordApiPathBuilder::finish(query)` appends the query
+without changing existing no-query path behavior. Query values are encoded as
+components and cannot add raw query delimiters or change the origin/path. No
+arbitrary size limit is imposed by this builder.
+
 The first synchronous REST methods are `get_current_user()`,
 `get_guild(Snowflake)`, and `get_channel(Snowflake)`. They build authenticated
 GET requests, pass explicit normalized route metadata and typed major-resource

@@ -3,6 +3,7 @@
 #include <discordcpp/discord_client_error.hpp>
 #include <discordcpp/discord_models.hpp>
 #include <discordcpp/rate_limit.hpp>
+#include <discordcpp/query_parameters.hpp>
 #include <discordcpp/rest_client.hpp>
 #include <discordcpp/result.hpp>
 #include <discordcpp/snowflake.hpp>
@@ -73,6 +74,9 @@ public:
     [[nodiscard]] Result<void, LocalValidationError> append_parameter(std::string_view segment);
     [[nodiscard]] Result<void, LocalValidationError> append_snowflake(Snowflake value);
     [[nodiscard]] Result<std::string, LocalValidationError> finish() const;
+    /// Return the same validated origin-form path with encoded query components.
+    /// An empty collection leaves the target byte-for-byte unchanged.
+    [[nodiscard]] Result<std::string, LocalValidationError> finish(const QueryParameters& query) const;
 
 private:
     std::uint32_t api_version_{};
@@ -109,6 +113,12 @@ public:
     /// Construct an authenticated request from an explicit path builder.
     [[nodiscard]] Result<HttpRequest, DiscordClientError> build_request(
         std::string_view method, const DiscordApiPathBuilder& path,
+        const Headers& additional_headers = {}, std::string body = {},
+        std::optional<SteadyClock::time_point> deadline = std::nullopt) const;
+
+    /// Like build_request(path), with the query serialized after the path.
+    [[nodiscard]] Result<HttpRequest, DiscordClientError> build_request_with_query(
+        std::string_view method, const DiscordApiPathBuilder& path, const QueryParameters& query,
         const Headers& additional_headers = {}, std::string body = {},
         std::optional<SteadyClock::time_point> deadline = std::nullopt) const;
 

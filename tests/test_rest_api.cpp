@@ -163,6 +163,21 @@ void test_authenticated_request_construction_and_ownership() {
             "method, origin-form target, body, and deadline are preserved");
     }
 
+    discordcpp::QueryParameters query;
+    check(query.add("limit", 25).has_value() && query.add("before", "a&b=c").has_value(),
+        "request query parameters are accepted");
+    auto queried_request = client.build_request_with_query("GET", path, query);
+    check(queried_request.has_value() && queried_request.value().target ==
+        "/api/v10/channels/42/messages?limit=25&before=a%26b%3Dc" &&
+        queried_request.value().headers.find("authorization").has_value(),
+        "authenticated request construction appends encoded query components after the validated path");
+    discordcpp::QueryParameters empty_query;
+    auto empty_queried_request = client.build_request_with_query("GET", path, empty_query);
+    check(empty_queried_request.has_value() && empty_queried_request.value().target ==
+        "/api/v10/channels/42/messages", "empty request query preserves existing target exactly");
+    discordcpp::QueryParameters invalid_query;
+    check(invalid_query.add("bad", "").has_error(), "invalid query setup is rejected");
+
     auto provider_shared = std::dynamic_pointer_cast<const TestTokenProvider>(weak_provider.lock());
     provider_shared->rotate("beta-token");
     const auto rotated = client.build_request("GET", "/users/@me");
