@@ -484,6 +484,44 @@ Result<std::vector<Emoji>, DiscordClientError> DiscordRestClient::get_guild_emoj
     return detail::parse_emoji_collection_response(response.value());
 }
 
+Result<GuildMember, DiscordClientError> DiscordRestClient::get_guild_member(Snowflake guild_id,
+    Snowflake user_id, std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const {
+    if (guild_id.value() == 0 || user_id.value() == 0) {
+        return Result<GuildMember, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_snowflake, "guild and user IDs must be non-zero")));
+    }
+    DiscordApiPathBuilder path{ config_.api_version };
+    (void)path.append_literal("guilds");
+    (void)path.append_snowflake(guild_id);
+    (void)path.append_literal("members");
+    (void)path.append_snowflake(user_id);
+    const RouteDescriptor route{ "GET", "/guilds/{guild_id}/members/{user_id}",
+        { MajorResource{ MajorResourceKind::guild, guild_id.to_string(), 0 } },
+        GlobalLimitClass::ordinary, std::nullopt };
+    auto response = execute_get(path, route, deadline, cancellation);
+    if (!response.has_value()) return Result<GuildMember, DiscordClientError>::failure(std::move(response).error());
+    return detail::parse_guild_member_response(response.value());
+}
+
+Result<Role, DiscordClientError> DiscordRestClient::get_guild_role(Snowflake guild_id,
+    Snowflake role_id, std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const {
+    if (guild_id.value() == 0 || role_id.value() == 0) {
+        return Result<Role, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_snowflake, "guild and role IDs must be non-zero")));
+    }
+    DiscordApiPathBuilder path{ config_.api_version };
+    (void)path.append_literal("guilds");
+    (void)path.append_snowflake(guild_id);
+    (void)path.append_literal("roles");
+    (void)path.append_snowflake(role_id);
+    const RouteDescriptor route{ "GET", "/guilds/{guild_id}/roles/{role_id}",
+        { MajorResource{ MajorResourceKind::guild, guild_id.to_string(), 0 } },
+        GlobalLimitClass::ordinary, std::nullopt };
+    auto response = execute_get(path, route, deadline, cancellation);
+    if (!response.has_value()) return Result<Role, DiscordClientError>::failure(std::move(response).error());
+    return detail::parse_role_response(response.value());
+}
+
 Result<HttpRequest, DiscordClientError> DiscordRestClient::build_request(
     std::string_view method, std::string_view endpoint_path, const Headers& additional_headers,
     std::string body, std::optional<SteadyClock::time_point> deadline) const {

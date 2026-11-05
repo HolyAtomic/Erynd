@@ -156,6 +156,17 @@ public:
         std::optional<SteadyClock::time_point> deadline = std::nullopt,
         std::stop_token cancellation = {}) const;
 
+    /// GET /guilds/{guild_id}/members/{user_id}.
+    [[nodiscard]] Result<GuildMember, DiscordClientError> get_guild_member(Snowflake guild_id,
+        Snowflake user_id, std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
+    /// GET /guilds/{guild_id}/roles/{role_id}. Discord documents this
+    /// single-role retrieval endpoint; it returns the existing partial Role.
+    [[nodiscard]] Result<Role, DiscordClientError> get_guild_role(Snowflake guild_id,
+        Snowflake role_id, std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
 private:
     [[nodiscard]] Result<HttpResponse, DiscordClientError> execute_get(
         const DiscordApiPathBuilder& path, const RouteDescriptor& route,

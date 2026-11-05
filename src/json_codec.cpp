@@ -209,6 +209,42 @@ Result<std::vector<Snowflake>, ModelValidationError> as_snowflake_array(const Js
     return Result<std::vector<Snowflake>, ModelValidationError>::success(std::move(result));
 }
 
+template<typename T, typename Convert>
+Result<Field<T>, ModelValidationError> read_required_field(const Json& object, const HttpResponse& response,
+    std::string_view key, std::string path, bool nullable, Convert&& convert) {
+    auto field = read_field<T>(object, response, key, path, nullable, std::forward<Convert>(convert));
+    if (!field.has_value()) return field;
+    if (field.value().is_absent()) {
+        return Result<Field<T>, ModelValidationError>::failure(
+            model_error(response, std::move(path), "required field is missing"));
+    }
+    return field;
+}
+
+Result<User, ModelValidationError> as_user(const Json& value, const HttpResponse& response,
+    const std::string& path) {
+    if (!value.is_object()) {
+        return Result<User, ModelValidationError>::failure(model_error(response, path, "user must be an object"));
+    }
+    User user{};
+    auto id = read_required<Snowflake>(value, response, "id", path + "/id", as_snowflake);
+    if (!id.has_value()) return Result<User, ModelValidationError>::failure(std::move(id).error());
+    auto username = read_required<std::string>(value, response, "username", path + "/username", as_string);
+    if (!username.has_value()) return Result<User, ModelValidationError>::failure(std::move(username).error());
+    auto global_name = read_field<std::string>(value, response, "global_name", path + "/global_name", true, as_string);
+    if (!global_name.has_value()) return Result<User, ModelValidationError>::failure(std::move(global_name).error());
+    auto avatar = read_field<std::string>(value, response, "avatar", path + "/avatar", true, as_string);
+    if (!avatar.has_value()) return Result<User, ModelValidationError>::failure(std::move(avatar).error());
+    auto bot = read_field<bool>(value, response, "bot", path + "/bot", false, as_bool);
+    if (!bot.has_value()) return Result<User, ModelValidationError>::failure(std::move(bot).error());
+    user.id = std::move(id).value();
+    user.username = std::move(username).value();
+    user.global_name = std::move(global_name).value();
+    user.avatar = std::move(avatar).value();
+    user.bot = std::move(bot).value();
+    return Result<User, ModelValidationError>::success(std::move(user));
+}
+
 template<typename Model, typename Populate>
 Result<Model, DiscordClientError> parse_model(const HttpResponse& response, Populate&& populate) {
     auto parsed = parse_document(response);
@@ -374,8 +410,6 @@ Result<Channel, DiscordClientError> parse_channel_response(const HttpResponse& r
     });
 }
 
-namespace {
-
 Result<Role, DiscordClientError> parse_role_response(const HttpResponse& response) {
     return parse_model<Role>(response, [](const Json& object, const HttpResponse& responseNew) {
         Role model{};
@@ -418,6 +452,46 @@ Result<Role, DiscordClientError> parse_role_response(const HttpResponse& respons
         return Result<Role, DiscordClientError>::success(std::move(model));
     });
 }
+
+Result<GuildMember, DiscordClientError> parse_guild_member_response(const HttpResponse& response) {
+    return parse_model<GuildMember>(response, [](const Json& object, const HttpResponse& responseNew) {
+        GuildMember model{};
+        auto user = read_field<User>(object, responseNew, "user", "/user", false, as_user);
+        if (failed<GuildMember>(user)) return Result<GuildMember, DiscordClientError>::failure(as_client_error(std::move(user).error()));
+        auto nick = read_field<std::string>(object, responseNew, "nick", "/nick", true, as_string);
+        if (failed<GuildMember>(nick)) return Result<GuildMember, DiscordClientError>::failure(as_client_error(std::move(nick).error()));
+        auto avatar = read_field<std::string>(object, responseNew, "avatar", "/avatar", true, as_string);
+        if (failed<GuildMember>(avatar)) return Result<GuildMember, DiscordClientError>::failure(as_client_error(std::move(avatar).error()));
+        auto roles = read_required<std::vector<Snowflake>>(object, responseNew, "roles", "/roles", as_snowflake_array);
+        if (failed<GuildMember>(roles)) return Result<GuildMember, DiscordClientError>::failure(as_client_error(std::move(roles).error()));
+        auto joined_at = read_required_field<std::string>(object, responseNew, "joined_at", "/joined_at", true, as_string);
+        if (failed<GuildMember>(joined_at)) return Result<GuildMember, DiscordClientError>::failure(as_client_error(std::move(joined_at).error()));
+        auto premium_since = read_field<std::string>(object, responseNew, "premium_since", "/premium_since", true, as_string);
+        if (failed<GuildMember>(premium_since)) return Result<GuildMember, DiscordClientError>::failure(as_client_error(std::move(premium_since).error()));
+        auto deaf = read_required<bool>(object, responseNew, "deaf", "/deaf", as_bool);
+        if (failed<GuildMember>(deaf)) return Result<GuildMember, DiscordClientError>::failure(as_client_error(std::move(deaf).error()));
+        auto mute = read_required<bool>(object, responseNew, "mute", "/mute", as_bool);
+        if (failed<GuildMember>(mute)) return Result<GuildMember, DiscordClientError>::failure(as_client_error(std::move(mute).error()));
+        auto pending = read_field<bool>(object, responseNew, "pending", "/pending", false, as_bool);
+        if (failed<GuildMember>(pending)) return Result<GuildMember, DiscordClientError>::failure(as_client_error(std::move(pending).error()));
+        auto permissions = read_field<std::string>(object, responseNew, "permissions", "/permissions", false,
+            as_permission_bits);
+        if (failed<GuildMember>(permissions)) return Result<GuildMember, DiscordClientError>::failure(as_client_error(std::move(permissions).error()));
+        model.user = std::move(user).value();
+        model.nick = std::move(nick).value();
+        model.avatar = std::move(avatar).value();
+        model.roles = std::move(roles).value();
+        model.joined_at = std::move(joined_at).value();
+        model.premium_since = std::move(premium_since).value();
+        model.deaf = std::move(deaf).value();
+        model.mute = std::move(mute).value();
+        model.pending = std::move(pending).value();
+        model.permissions = std::move(permissions).value();
+        return Result<GuildMember, DiscordClientError>::success(std::move(model));
+    });
+}
+
+namespace {
 
 Result<Emoji, DiscordClientError> parse_emoji_response(const HttpResponse& response) {
     return parse_model<Emoji>(response, [](const Json& object, const HttpResponse& responseNew) {

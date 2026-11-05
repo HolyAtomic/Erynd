@@ -69,4 +69,21 @@ struct Emoji final {
     Field<bool> available;
 };
 
+/// Deliberately partial subset of Discord's Guild Member object. The user is
+/// optional; roles and joined_at (which may be null), deaf, and mute are
+/// required by the member schema. Timestamp strings retain their ISO 8601 wire
+/// form so this model does not impose a date-time dependency.
+struct GuildMember final {
+    Field<User> user;
+    Field<std::string> nick;
+    Field<std::string> avatar;
+    std::vector<Snowflake> roles;
+    Field<std::string> joined_at;
+    Field<std::string> premium_since;
+    bool deaf{};
+    bool mute{};
+    Field<bool> pending;
+    Field<std::string> permissions;
+};
+
 } // namespace discordcpp

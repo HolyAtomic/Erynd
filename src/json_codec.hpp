@@ -16,6 +16,8 @@ using Json = nlohmann::json;
 [[nodiscard]] Result<User, DiscordClientError> parse_user_response(const HttpResponse& response);
 [[nodiscard]] Result<Guild, DiscordClientError> parse_guild_response(const HttpResponse& response);
 [[nodiscard]] Result<Channel, DiscordClientError> parse_channel_response(const HttpResponse& response);
+[[nodiscard]] Result<Role, DiscordClientError> parse_role_response(const HttpResponse& response);
+[[nodiscard]] Result<GuildMember, DiscordClientError> parse_guild_member_response(const HttpResponse& response);
 [[nodiscard]] Result<std::vector<Channel>, DiscordClientError> parse_channel_collection_response(
     const HttpResponse& response);
 [[nodiscard]] Result<std::vector<Role>, DiscordClientError> parse_role_collection_response(

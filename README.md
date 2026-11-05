@@ -115,7 +115,8 @@ arbitrary size limit is imposed by this builder.
 
 The synchronous REST methods include `get_current_user()`,
 `get_guild(Snowflake)`, `get_channel(Snowflake)`, `get_guild_channels(Snowflake)`,
-`get_guild_roles(Snowflake)`, and `get_guild_emojis(Snowflake)`. They build
+`get_guild_roles(Snowflake)`, `get_guild_emojis(Snowflake)`,
+`get_guild_member(guild_id, user_id)`, and `get_guild_role(guild_id, role_id)`. They build
 authenticated GET requests, pass explicit normalized route metadata and typed
 guild/channel major-resource IDs to the shared rate-limit coordinator, and
 decode responses into partial models. Collection calls return vectors and fail
@@ -132,6 +133,9 @@ The optional REST API component also provides intentionally partial models:
   `mentionable`, `icon`, and `unicode_emoji`.
 - `Emoji`: `id`, `name`, `roles`, `require_colons`, `managed`, `animated`, and
   `available`.
+- `GuildMember`: optional nested `user`, `nick`, and guild `avatar`; required
+  `roles`, nullable `joined_at`, `deaf`, and `mute`; optional `premium_since`,
+  `pending`, and string `permissions`.
 
 These are not complete Discord resource schemas. `Field<T>` distinguishes an
 omitted field, explicit JSON `null`, and a concrete value. Unknown response

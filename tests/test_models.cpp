@@ -233,6 +233,43 @@ void test_guild_collection_models() {
         "empty Discord collection payloads decode to empty vectors");
 }
 
+void test_guild_member_model() {
+    const auto decoded = discordcpp::detail::parse_guild_member_response(response(
+        R"json({"user":{"id":"600","username":"member"},"nick":null,"avatar":"guild-avatar","roles":["601","602"],"joined_at":"2025-01-02T03:04:05Z","premium_since":null,"deaf":false,"mute":true,"pending":false,"permissions":"18446744073709551616","unknown":true})json"));
+    check(decoded.has_value() && decoded.value().user.value().id.value() == 600 &&
+        decoded.value().nick.is_null() && decoded.value().roles.size() == 2 &&
+        decoded.value().joined_at.value() == "2025-01-02T03:04:05Z" &&
+        decoded.value().premium_since.is_null() && decoded.value().mute &&
+        decoded.value().permissions.value() == "18446744073709551616",
+        "GuildMember decodes user, snowflake roles, timestamps, flags, and string permissions");
+
+    const auto minimal = discordcpp::detail::parse_guild_member_response(response(
+        R"json({"roles":[],"joined_at":null,"deaf":false,"mute":false})json"));
+    check(minimal.has_value() && minimal.value().user.is_absent() && minimal.value().nick.is_absent() &&
+        minimal.value().avatar.is_absent() && minimal.value().joined_at.is_null() &&
+        minimal.value().premium_since.is_absent() && minimal.value().pending.is_absent(),
+        "GuildMember distinguishes absent optional fields from null values");
+
+    check(is_model_error(discordcpp::detail::parse_guild_member_response(response(
+        R"json({"roles":[],"deaf":false,"mute":false})json")), "/joined_at"),
+        "GuildMember requires joined_at while allowing explicit null");
+    check(is_model_error(discordcpp::detail::parse_guild_member_response(response(
+        R"json({"roles":[],"joined_at":null,"deaf":false})json")), "/mute"),
+        "GuildMember requires mute");
+    check(is_model_error(discordcpp::detail::parse_guild_member_response(response(
+        R"json({"roles":[1],"joined_at":null,"deaf":false,"mute":false})json")), "/roles/0"),
+        "GuildMember role IDs must be decimal Snowflake strings");
+    check(is_model_error(discordcpp::detail::parse_guild_member_response(response(
+        R"json({"roles":[],"joined_at":7,"deaf":false,"mute":false})json")), "/joined_at"),
+        "GuildMember timestamp must be a string or null");
+    check(is_model_error(discordcpp::detail::parse_guild_member_response(response(
+        R"json({"roles":[],"joined_at":null,"deaf":false,"mute":false,"user":{"id":"1","username":false}})json")),
+        "/user/username"), "GuildMember validates its nested partial User object");
+    check(is_model_error(discordcpp::detail::parse_guild_member_response(response(
+        R"json({"roles":[],"joined_at":null,"deaf":false,"mute":false,"permissions":"1x"})json")),
+        "/permissions"), "GuildMember permissions must be a decimal string when present");
+}
+
 void test_json_errors_and_snowflake_json_representation() {
     auto malformed_response = response(R"({"id":"1","username":)");
     malformed_response.status = 200;
@@ -288,6 +325,7 @@ int main() {
     test_guild_model();
     test_channel_model();
     test_guild_collection_models();
+    test_guild_member_model();
     test_json_errors_and_snowflake_json_representation();
 
     if (failures == 0) {
