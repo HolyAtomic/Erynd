@@ -3,6 +3,7 @@
 #include <discordcpp/result.hpp>
 #include <discordcpp/rest_client.hpp>
 #include <discordcpp/rate_limit.hpp>
+#include <discordcpp/snowflake.hpp>
 #include "fake_transport.hpp"
 
 #include <array>
@@ -141,6 +142,54 @@ void check(bool condition, std::string_view description) {
         ++failures;
         std::cerr << "FAIL: " << description << '\n';
     }
+}
+
+void test_snowflake_parse_and_serialize() {
+    const auto zero = discordcpp::Snowflake::parse("0");
+    check(zero.has_value() && zero.value().value() == 0 && zero.value().to_string() == "0",
+        "Snowflake accepts and serializes zero");
+
+    const auto one = discordcpp::Snowflake::parse("1");
+    check(one.has_value() && one.value().to_string() == "1", "Snowflake accepts one");
+
+    const auto typical = discordcpp::Snowflake::parse("123456789012345678");
+    check(typical.has_value() && typical.value().value() == 123456789012345678ULL &&
+        typical.value().to_string() == "123456789012345678", "Snowflake preserves a typical identifier");
+
+    constexpr auto maximum_text = "18446744073709551615";
+    const auto maximum = discordcpp::Snowflake::parse(maximum_text);
+    check(maximum.has_value() && maximum.value().value() == UINT64_MAX &&
+        maximum.value().to_string() == maximum_text, "Snowflake supports the full uint64 range");
+
+    const auto overflow = discordcpp::Snowflake::parse("18446744073709551616");
+    check(overflow.has_error() && overflow.error().issue == discordcpp::SnowflakeParseIssue::overflow &&
+        overflow.error().position == 19, "Snowflake reports overflow at the offending digit");
+
+    const auto negative = discordcpp::Snowflake::parse("-1");
+    check(negative.has_error() && negative.error().issue == discordcpp::SnowflakeParseIssue::non_decimal_character &&
+        negative.error().position == 0, "Snowflake rejects negative signs");
+    const auto positive = discordcpp::Snowflake::parse("+1");
+    check(positive.has_error() && positive.error().issue == discordcpp::SnowflakeParseIssue::non_decimal_character,
+        "Snowflake rejects positive signs");
+
+    const auto whitespace = discordcpp::Snowflake::parse(" 1");
+    check(whitespace.has_error() && whitespace.error().issue == discordcpp::SnowflakeParseIssue::non_decimal_character,
+        "Snowflake rejects whitespace");
+    const auto empty = discordcpp::Snowflake::parse("");
+    check(empty.has_error() && empty.error().issue == discordcpp::SnowflakeParseIssue::empty_input,
+        "Snowflake rejects empty input");
+
+    const auto leading_zeroes = discordcpp::Snowflake::parse("00042");
+    check(leading_zeroes.has_value() && leading_zeroes.value().to_string() == "42",
+        "Snowflake accepts leading zeroes and serializes canonically");
+
+    const auto invalid = discordcpp::Snowflake::parse("12x4");
+    check(invalid.has_error() && invalid.error().issue == discordcpp::SnowflakeParseIssue::non_decimal_character &&
+        invalid.error().position == 2, "Snowflake rejects non-decimal characters with a position");
+
+    const discordcpp::Snowflake numeric{ 42 };
+    check(numeric == discordcpp::Snowflake{ 42 } && numeric < discordcpp::Snowflake{ 43 },
+        "Snowflake numeric construction, equality, and ordering work");
 }
 
 template<typename Exception, typename Function>
@@ -1511,6 +1560,7 @@ void test_rest_client_rate_limit_integration_and_legacy_path() {
 } // namespace
 
 int main() {
+    test_snowflake_parse_and_serialize();
     test_result_states_and_access();
     test_result_invalid_access_and_same_alternative_types();
     test_result_move_only_support();

@@ -57,6 +57,32 @@ cmake --build build-curl --config Debug
 ctest --test-dir build-curl -C Debug --output-on-failure
 ```
 
+The Discord-specific REST API foundation is an independent optional target. It
+requires an installed nlohmann/json 3.12.0 package; CMake does not download it.
+Install that package and enable the target explicitly:
+
+```bash
+cmake -S . -B build-rest -DBUILD_TESTING=ON \
+  -DDISCORDCPP_WITH_REST_API=ON \
+  -DCMAKE_PREFIX_PATH=/path/to/dependencies
+cmake --build build-rest --config Debug
+```
+
+REST API consumers link `discordcpp::rest_api`; the core remains available as
+`discordcpp::discordcpp`. The API layer composes versioned origin-form paths
+(for example `/api/v10/users/@me`), while the injected transport owns the
+authority/origin. For `CurlHttpTransport`, set `base_url` to
+`https://discord.com` when using the API layer. The existing curl default of
+`https://discord.com/api/v10` remains unchanged for low-level `RestClient`
+users. The REST API component borrows its `RestClient` and
+`RateLimitCoordinator`; both must outlive it.
+
+Bot authentication and endpoint methods are not part of this foundation yet.
+The planned token provider will be owned by shared pointer, must support
+concurrent reads, and will expose token views only during a synchronous request
+construction callback. Credentials will never be part of endpoint paths or
+diagnostic messages.
+
 Installed consumers link `discordcpp::discordcpp` for the core alone, or add
 `discordcpp::curl_transport` to use `CurlHttpTransport`. The latter target
 requires libcurl to be installed for the consumer as well. Curl transport URLs

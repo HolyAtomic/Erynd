@@ -11,6 +11,7 @@ include(CTest)
 include(CMakePackageConfigHelpers)
 
 option(DISCORDCPP_WITH_CURL "Build the optional libcurl HTTP transport" OFF)
+option(DISCORDCPP_WITH_REST_API "Build the optional Discord REST API component" OFF)
 
 add_library(discordcpp STATIC
     src/discordcpp.cpp
@@ -38,6 +39,27 @@ function(discordcpp_enable_private_warnings target)
 endfunction()
 discordcpp_enable_private_warnings(discordcpp)
 
+if(DISCORDCPP_WITH_REST_API)
+    find_package(nlohmann_json 3.12.0 CONFIG REQUIRED)
+
+    add_library(discordcpp_rest_api STATIC src/discord_rest_client.cpp)
+    add_library(discordcpp::rest_api ALIAS discordcpp_rest_api)
+    set_target_properties(discordcpp_rest_api PROPERTIES
+        CXX_EXTENSIONS OFF
+        EXPORT_NAME rest_api
+    )
+    target_compile_features(discordcpp_rest_api PUBLIC cxx_std_20)
+    target_include_directories(discordcpp_rest_api PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    )
+    target_link_libraries(discordcpp_rest_api
+        PUBLIC discordcpp::discordcpp
+        PRIVATE nlohmann_json::nlohmann_json
+    )
+    discordcpp_enable_private_warnings(discordcpp_rest_api)
+endif()
+
 if(DISCORDCPP_WITH_CURL)
     find_package(CURL 7.84.0 REQUIRED)
 
@@ -62,6 +84,7 @@ endif()
 
 set(discordcpp_cmake_install_dir "${CMAKE_INSTALL_LIBDIR}/cmake/discordcpp")
 set(DISCORDCPP_WITH_CURL_PACKAGE ${DISCORDCPP_WITH_CURL})
+set(DISCORDCPP_WITH_REST_API_PACKAGE ${DISCORDCPP_WITH_REST_API})
 configure_package_config_file(
     cmake/DiscordCppConfig.cmake.in
     "${CMAKE_CURRENT_BINARY_DIR}/DiscordCppConfig.cmake"
@@ -77,6 +100,9 @@ set(discordcpp_install_targets discordcpp)
 if(DISCORDCPP_WITH_CURL)
     list(APPEND discordcpp_install_targets discordcpp_curl_transport)
 endif()
+if(DISCORDCPP_WITH_REST_API)
+    list(APPEND discordcpp_install_targets discordcpp_rest_api)
+endif()
 install(TARGETS ${discordcpp_install_targets}
     EXPORT DiscordCppTargets
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
@@ -84,11 +110,18 @@ install(TARGETS ${discordcpp_install_targets}
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
-if(DISCORDCPP_WITH_CURL)
-    install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-else()
-    install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}" PATTERN "curl_transport.hpp" EXCLUDE)
+set(discordcpp_header_excludes)
+if(NOT DISCORDCPP_WITH_CURL)
+    list(APPEND discordcpp_header_excludes PATTERN "curl_transport.hpp" EXCLUDE)
 endif()
+if(NOT DISCORDCPP_WITH_REST_API)
+    list(APPEND discordcpp_header_excludes
+        PATTERN "discord_rest_client.hpp" EXCLUDE
+        PATTERN "discord_client_error.hpp" EXCLUDE
+        PATTERN "snowflake.hpp" EXCLUDE
+    )
+endif()
+install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}" ${discordcpp_header_excludes})
 install(EXPORT DiscordCppTargets
     FILE DiscordCppTargets.cmake
     NAMESPACE discordcpp::
