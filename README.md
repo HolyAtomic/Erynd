@@ -116,10 +116,13 @@ arbitrary size limit is imposed by this builder.
 The synchronous REST methods include `get_current_user()`,
 `get_guild(Snowflake)`, `get_channel(Snowflake)`, `get_guild_channels(Snowflake)`,
 `get_guild_roles(Snowflake)`, `get_guild_emojis(Snowflake)`,
-`get_guild_member(guild_id, user_id)`, and `get_guild_role(guild_id, role_id)`. They build
-authenticated GET requests, pass explicit normalized route metadata and typed
-guild/channel major-resource IDs to the shared rate-limit coordinator, and
-decode responses into partial models. Collection calls return vectors and fail
+`get_guild_member(guild_id, user_id)`, `get_guild_role(guild_id, role_id)`,
+`add_guild_member_role(guild_id, user_id, role_id)`,
+`remove_guild_member_role(guild_id, user_id, role_id)`, and
+`modify_guild_member(guild_id, user_id, changes)`. They build authenticated
+requests, pass explicit normalized route metadata and typed guild/channel
+major-resource IDs to the shared rate-limit coordinator, and decode model
+responses where the endpoint returns one. Collection calls return vectors and fail
 the whole operation if any element is malformed. They do not retry or replay;
 zero resource IDs are rejected before dispatch. Guild channel listing follows
 Discord's documented response (guild channels, excluding threads).
@@ -136,6 +139,13 @@ The optional REST API component also provides intentionally partial models:
 - `GuildMember`: optional nested `user`, `nick`, and guild `avatar`; required
   `roles`, nullable `joined_at`, `deaf`, and `mute`; optional `premium_since`,
   `pending`, and string `permissions`.
+
+`GuildMemberModifyRequest` currently supports only `nick` and `roles`. Its
+`Field<T>` members distinguish absent (not sent), null (sent as JSON null), and
+concrete values. The encoder emits only supplied properties. The member role
+assignment endpoints require `MANAGE_ROLES` and accept only Discord's documented
+empty `204 No Content` response; member modification returns and decodes a
+`200 OK` GuildMember. Discord permission failures remain API errors.
 
 These are not complete Discord resource schemas. `Field<T>` distinguishes an
 omitted field, explicit JSON `null`, and a concrete value. Unknown response

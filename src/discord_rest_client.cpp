@@ -342,7 +342,14 @@ DiscordRestClient::DiscordRestClient(RestClient& rest_client, RateLimitCoordinat
 Result<HttpResponse, DiscordClientError> DiscordRestClient::execute_get(
     const DiscordApiPathBuilder& path, const RouteDescriptor& route,
     std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const {
-    auto request = build_request("GET", path, {}, {}, deadline);
+    return execute_request("GET", path, route, {}, {}, deadline, cancellation);
+}
+
+Result<HttpResponse, DiscordClientError> DiscordRestClient::execute_request(
+    std::string_view method, const DiscordApiPathBuilder& path, const RouteDescriptor& route,
+    const Headers& headers, std::string body,
+    std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const {
+    auto request = build_request(method, path, headers, std::move(body), deadline);
     if (!request.has_value()) {
         return Result<HttpResponse, DiscordClientError>::failure(std::move(request).error());
     }
@@ -520,6 +527,110 @@ Result<Role, DiscordClientError> DiscordRestClient::get_guild_role(Snowflake gui
     auto response = execute_get(path, route, deadline, cancellation);
     if (!response.has_value()) return Result<Role, DiscordClientError>::failure(std::move(response).error());
     return detail::parse_role_response(response.value());
+}
+
+Result<void, DiscordClientError> DiscordRestClient::add_guild_member_role(Snowflake guild_id,
+    Snowflake user_id, Snowflake role_id, std::optional<SteadyClock::time_point> deadline,
+    std::stop_token cancellation) const {
+    if (guild_id.value() == 0 || user_id.value() == 0 || role_id.value() == 0) {
+        return Result<void, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_snowflake, "guild, user, and role IDs must be non-zero")));
+    }
+    DiscordApiPathBuilder path{ config_.api_version };
+    (void)path.append_literal("guilds");
+    (void)path.append_snowflake(guild_id);
+    (void)path.append_literal("members");
+    (void)path.append_snowflake(user_id);
+    (void)path.append_literal("roles");
+    (void)path.append_snowflake(role_id);
+    const RouteDescriptor route{ "PUT", "/guilds/{guild_id}/members/{user_id}/roles/{role_id}",
+        { MajorResource{ MajorResourceKind::guild, guild_id.to_string(), 0 } },
+        GlobalLimitClass::ordinary, std::nullopt };
+    auto response = execute_request("PUT", path, route, {}, {}, deadline, cancellation);
+    if (!response.has_value()) return Result<void, DiscordClientError>::failure(std::move(response).error());
+    if (response.value().status != 204 || !response.value().body.empty()) {
+        return Result<void, DiscordClientError>::failure(DiscordClientError{
+            std::in_place_type<TransportError>,
+            TransportError{ TransportFailureCategory::protocol,
+                "Add Guild Member Role requires an empty HTTP 204 response", true }
+        });
+    }
+    return Result<void, DiscordClientError>::success();
+}
+
+Result<void, DiscordClientError> DiscordRestClient::remove_guild_member_role(Snowflake guild_id,
+    Snowflake user_id, Snowflake role_id, std::optional<SteadyClock::time_point> deadline,
+    std::stop_token cancellation) const {
+    if (guild_id.value() == 0 || user_id.value() == 0 || role_id.value() == 0) {
+        return Result<void, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_snowflake, "guild, user, and role IDs must be non-zero")));
+    }
+    DiscordApiPathBuilder path{ config_.api_version };
+    (void)path.append_literal("guilds");
+    (void)path.append_snowflake(guild_id);
+    (void)path.append_literal("members");
+    (void)path.append_snowflake(user_id);
+    (void)path.append_literal("roles");
+    (void)path.append_snowflake(role_id);
+    const RouteDescriptor route{ "DELETE", "/guilds/{guild_id}/members/{user_id}/roles/{role_id}",
+        { MajorResource{ MajorResourceKind::guild, guild_id.to_string(), 0 } },
+        GlobalLimitClass::ordinary, std::nullopt };
+    auto response = execute_request("DELETE", path, route, {}, {}, deadline, cancellation);
+    if (!response.has_value()) return Result<void, DiscordClientError>::failure(std::move(response).error());
+    if (response.value().status != 204 || !response.value().body.empty()) {
+        return Result<void, DiscordClientError>::failure(DiscordClientError{
+            std::in_place_type<TransportError>,
+            TransportError{ TransportFailureCategory::protocol,
+                "Remove Guild Member Role requires an empty HTTP 204 response", true }
+        });
+    }
+    return Result<void, DiscordClientError>::success();
+}
+
+Result<GuildMember, DiscordClientError> DiscordRestClient::modify_guild_member(Snowflake guild_id,
+    Snowflake user_id, const GuildMemberModifyRequest& changes,
+    std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const {
+    if (guild_id.value() == 0 || user_id.value() == 0) {
+        return Result<GuildMember, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_snowflake, "guild and user IDs must be non-zero")));
+    }
+    if (changes.nick.is_absent() && changes.roles.is_absent()) {
+        return Result<GuildMember, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_request_body, "at least one GuildMember field must be supplied")));
+    }
+    if (changes.roles.has_value() && std::any_of(changes.roles.value().begin(), changes.roles.value().end(),
+        [](Snowflake role_id) { return role_id.value() == 0; })) {
+        return Result<GuildMember, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_snowflake, "role IDs must be non-zero")));
+    }
+
+    std::string body;
+    try {
+        body = detail::encode_guild_member_modify_request(changes);
+    } catch (...) {
+        return Result<GuildMember, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_request_body, "GuildMember request body could not be encoded")));
+    }
+    Headers headers;
+    headers.add("Content-Type", "application/json");
+    DiscordApiPathBuilder path{ config_.api_version };
+    (void)path.append_literal("guilds");
+    (void)path.append_snowflake(guild_id);
+    (void)path.append_literal("members");
+    (void)path.append_snowflake(user_id);
+    const RouteDescriptor route{ "PATCH", "/guilds/{guild_id}/members/{user_id}",
+        { MajorResource{ MajorResourceKind::guild, guild_id.to_string(), 0 } },
+        GlobalLimitClass::ordinary, std::nullopt };
+    auto response = execute_request("PATCH", path, route, headers, std::move(body), deadline, cancellation);
+    if (!response.has_value()) return Result<GuildMember, DiscordClientError>::failure(std::move(response).error());
+    if (response.value().status != 200) {
+        return Result<GuildMember, DiscordClientError>::failure(DiscordClientError{
+            std::in_place_type<TransportError>,
+            TransportError{ TransportFailureCategory::protocol,
+                "Modify Guild Member requires an HTTP 200 response with a GuildMember body", true }
+        });
+    }
+    return detail::parse_guild_member_response(response.value());
 }
 
 Result<HttpRequest, DiscordClientError> DiscordRestClient::build_request(

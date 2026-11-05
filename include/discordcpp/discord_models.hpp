@@ -86,4 +86,13 @@ struct GuildMember final {
     Field<std::string> permissions;
 };
 
+/// Focused request subset for PATCH /guilds/{guild_id}/members/{user_id}.
+/// `nick` and `roles` preserve omitted, explicit null, and concrete values.
+/// Discord requires MANAGE_NICKNAMES for `nick` and MANAGE_ROLES for `roles`.
+/// A concrete roles vector replaces the member's role assignments.
+struct GuildMemberModifyRequest final {
+    Field<std::string> nick;
+    Field<std::vector<Snowflake>> roles;
+};
+
 } // namespace discordcpp

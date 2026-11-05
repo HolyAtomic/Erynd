@@ -167,9 +167,36 @@ public:
         Snowflake role_id, std::optional<SteadyClock::time_point> deadline = std::nullopt,
         std::stop_token cancellation = {}) const;
 
+    /// PUT /guilds/{guild_id}/members/{user_id}/roles/{role_id}. Requires
+    /// MANAGE_ROLES. Discord returns 204 No Content on success.
+    [[nodiscard]] Result<void, DiscordClientError> add_guild_member_role(Snowflake guild_id,
+        Snowflake user_id, Snowflake role_id,
+        std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
+    /// DELETE /guilds/{guild_id}/members/{user_id}/roles/{role_id}. Requires
+    /// MANAGE_ROLES. Discord returns 204 No Content on success.
+    [[nodiscard]] Result<void, DiscordClientError> remove_guild_member_role(Snowflake guild_id,
+        Snowflake user_id, Snowflake role_id,
+        std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
+    /// PATCH /guilds/{guild_id}/members/{user_id}. Discord returns the updated
+    /// GuildMember with 200 OK. Supplied `nick` requires MANAGE_NICKNAMES;
+    /// supplied `roles` requires MANAGE_ROLES. Discord permission failures are
+    /// returned as DiscordApiError and are never bypassed locally.
+    [[nodiscard]] Result<GuildMember, DiscordClientError> modify_guild_member(Snowflake guild_id,
+        Snowflake user_id, const GuildMemberModifyRequest& changes,
+        std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
 private:
     [[nodiscard]] Result<HttpResponse, DiscordClientError> execute_get(
         const DiscordApiPathBuilder& path, const RouteDescriptor& route,
+        std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const;
+    [[nodiscard]] Result<HttpResponse, DiscordClientError> execute_request(
+        std::string_view method, const DiscordApiPathBuilder& path, const RouteDescriptor& route,
+        const Headers& headers, std::string body,
         std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const;
 
     RestClient& rest_client_;

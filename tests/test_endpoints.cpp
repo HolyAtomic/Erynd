@@ -3,6 +3,7 @@
 #include "fake_transport.hpp"
 
 #include <chrono>
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <memory>
@@ -134,6 +135,10 @@ const std::string guild_role_json = R"json({
     "id":"523456789012345679","name":"moderator","permissions":"18446744073709551616",
     "position":1,"color":16711680,"hoist":true,"managed":false,"mentionable":true,
     "icon":null,"unicode_emoji":"🛡️","future_field":true
+})json";
+const std::string modified_guild_member_json = R"json({
+    "user":{"id":"823456789012345678","username":"member"},"nick":"renamed",
+    "roles":["523456789012345679"],"joined_at":null,"deaf":false,"mute":false
 })json";
 
 template<typename Model, typename Call, typename Validate>
@@ -464,6 +469,266 @@ void test_guild_role_endpoint() {
     }
 }
 
+template<typename Invoke>
+void exercise_guild_member_role_mutation(std::string_view label, std::string_view method,
+    std::string_view route, Invoke invoke) {
+    constexpr std::uint64_t guild_id = 723456789012345678ULL;
+    constexpr std::uint64_t user_id = 823456789012345678ULL;
+    constexpr std::uint64_t role_id = 523456789012345679ULL;
+    {
+        Environment env;
+        env.transport.queue_response(response(204, ""));
+        const auto result = invoke(env.client, discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, discordcpp::Snowflake{ role_id });
+        check(result.has_value(), std::string{ label } + " accepts documented empty 204 response");
+        const auto requests = env.transport.requests();
+        const auto target = "/api/v10/guilds/" + std::to_string(guild_id) + "/members/" +
+            std::to_string(user_id) + "/roles/" + std::to_string(role_id);
+        check(requests.size() == 1 && requests[0].method == method && requests[0].target == target &&
+            requests[0].body.empty(), std::string{ label } + " sends exact method/path without a request body");
+        if (requests.size() == 1) {
+            check(requests[0].headers.find("authorization") ==
+                std::optional<std::string_view>{ "Bot endpoint-test-token" } &&
+                requests[0].headers.find("user-agent").has_value() &&
+                !requests[0].headers.contains("content-type"),
+                std::string{ label } + " uses auth/User-Agent and omits Content-Type for bodyless request");
+        }
+    }
+    for (const auto& [status, body] : std::vector<std::pair<int, std::string>>{
+             { 200, "" }, { 204, "unexpected" } }) {
+        Environment env;
+        env.transport.queue_response(response(status, body));
+        const auto result = invoke(env.client, discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, discordcpp::Snowflake{ role_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::TransportError>(result.error()) &&
+            std::get<discordcpp::TransportError>(result.error()).category == discordcpp::TransportFailureCategory::protocol,
+            std::string{ label } + " rejects non-204 or non-empty success response as protocol error");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(403, R"json({"code":50013,"message":"Missing Permissions"})json"));
+        const auto result = invoke(env.client, discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, discordcpp::Snowflake{ role_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::DiscordApiError>(result.error()) &&
+            std::get<discordcpp::DiscordApiError>(result.error()).http_status == 403,
+            std::string{ label } + " preserves Discord permission errors without local bypass");
+    }
+    {
+        Environment env;
+        env.transport.queue_error({ discordcpp::TransportFailureCategory::io, "fixture", true });
+        const auto result = invoke(env.client, discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, discordcpp::Snowflake{ role_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::TransportError>(result.error()),
+            std::string{ label } + " preserves transport failures");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(429, R"json({"retry_after":"malformed"})json"));
+        const auto result = invoke(env.client, discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, discordcpp::Snowflake{ role_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::RateLimitMetadataError>(result.error()),
+            std::string{ label } + " preserves rate-limit metadata failures");
+    }
+    for (const auto [guild, user, role_id_value] : std::vector<std::array<std::uint64_t, 3>>{
+             { 0, user_id, role_id }, { guild_id, 0, role_id }, { guild_id, user_id, 0 } }) {
+        Environment env;
+        const auto result = invoke(env.client, discordcpp::Snowflake{ guild },
+            discordcpp::Snowflake{ user }, discordcpp::Snowflake{ role_id_value });
+        check(result.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(result.error()) &&
+            env.transport.request_count() == 0,
+            std::string{ label } + " rejects zero IDs before dispatch");
+    }
+    {
+        Environment env;
+        auto first = response(204, "");
+        set_bucket_capacity(first, std::string{ label } + "-mutation-bucket");
+        env.transport.queue_response(std::move(first));
+        env.transport.queue_response(response(204, ""));
+        auto same_guild = response(204, "");
+        set_bucket_capacity(same_guild, std::string{ label } + "-mutation-bucket");
+        env.transport.queue_response(std::move(same_guild));
+        check(invoke(env.client, discordcpp::Snowflake{ 111 }, discordcpp::Snowflake{ 222 },
+            discordcpp::Snowflake{ 333 }).has_value(), std::string{ label } + " observes first route bucket");
+        check(invoke(env.client, discordcpp::Snowflake{ 112 }, discordcpp::Snowflake{ 222 },
+            discordcpp::Snowflake{ 333 }).has_value() && env.scheduler.wait_count() == 0,
+            std::string{ label } + " keeps distinct Guild major resources isolated");
+        check(invoke(env.client, discordcpp::Snowflake{ 111 }, discordcpp::Snowflake{ 223 },
+            discordcpp::Snowflake{ 334 }).has_value() && env.scheduler.wait_count() == 1,
+            std::string{ label } + " normalizes user/role IDs under the typed Guild major resource");
+        const auto requests = env.transport.requests();
+        check(requests.size() == 3 && requests[0].method == method &&
+            requests[0].target.find(std::string{ route }) != std::string::npos,
+            std::string{ label } + " sends the route with the expected HTTP verb");
+    }
+}
+
+void test_guild_member_management_endpoints() {
+    exercise_guild_member_role_mutation("Add Guild Member Role", "PUT",
+        "/members/", [](discordcpp::DiscordRestClient& client, discordcpp::Snowflake guild,
+            discordcpp::Snowflake user, discordcpp::Snowflake role) {
+            return client.add_guild_member_role(guild, user, role);
+        });
+    exercise_guild_member_role_mutation("Remove Guild Member Role", "DELETE",
+        "/members/", [](discordcpp::DiscordRestClient& client, discordcpp::Snowflake guild,
+            discordcpp::Snowflake user, discordcpp::Snowflake role) {
+            return client.remove_guild_member_role(guild, user, role);
+        });
+
+    constexpr std::uint64_t guild_id = 723456789012345678ULL;
+    constexpr std::uint64_t user_id = 823456789012345678ULL;
+    {
+        Environment env;
+        env.transport.queue_response(response(200, modified_guild_member_json));
+        discordcpp::GuildMemberModifyRequest changes;
+        changes.nick = discordcpp::Field<std::string>::null();
+        changes.roles = discordcpp::Field<std::vector<discordcpp::Snowflake>>::with_value({
+            discordcpp::Snowflake{ 523456789012345679ULL }, discordcpp::Snowflake{ 523456789012345680ULL } });
+        const auto result = env.client.modify_guild_member(discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, changes);
+        check(result.has_value() && result.value().nick.has_value() &&
+            result.value().nick.value() == "renamed" && result.value().roles[0].value() == 523456789012345679ULL,
+            "Modify Guild Member decodes the returned 200 GuildMember");
+        const auto requests = env.transport.requests();
+        const auto expected_target = "/api/v10/guilds/" + std::to_string(guild_id) + "/members/" + std::to_string(user_id);
+        check(requests.size() == 1 && requests[0].method == "PATCH" && requests[0].target == expected_target,
+            "Modify Guild Member sends exact PATCH path");
+        if (requests.size() == 1) {
+            check(requests[0].body == R"json({"nick":null,"roles":["523456789012345679","523456789012345680"]})json" &&
+                requests[0].headers.find("content-type") == std::optional<std::string_view>{ "application/json" } &&
+                requests[0].headers.find("authorization") == std::optional<std::string_view>{ "Bot endpoint-test-token" } &&
+                requests[0].headers.find("user-agent").has_value(),
+                "Modify Guild Member serializes only supplied fields with JSON Content-Type and auth headers");
+        }
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, modified_guild_member_json));
+        discordcpp::GuildMemberModifyRequest changes;
+        changes.roles = discordcpp::Field<std::vector<discordcpp::Snowflake>>::null();
+        const auto result = env.client.modify_guild_member(discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, changes);
+        const auto requests = env.transport.requests();
+        check(result.has_value() && requests.size() == 1 && requests[0].body == R"json({"roles":null})json",
+            "Modify Guild Member preserves explicit null and omits absent nick field");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, modified_guild_member_json));
+        discordcpp::GuildMemberModifyRequest changes;
+        changes.nick = discordcpp::Field<std::string>::with_value("new nick");
+        changes.roles = discordcpp::Field<std::vector<discordcpp::Snowflake>>::with_value({});
+        const auto result = env.client.modify_guild_member(discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, changes);
+        const auto requests = env.transport.requests();
+        check(result.has_value() && requests.size() == 1 &&
+            requests[0].body == R"json({"nick":"new nick","roles":[]})json",
+            "Modify Guild Member serializes concrete strings and an explicit empty roles array");
+    }
+    {
+        Environment env;
+        auto first = response(200, modified_guild_member_json);
+        set_bucket_capacity(first, "modify-member-guild-major");
+        env.transport.queue_response(std::move(first));
+        env.transport.queue_response(response(200, modified_guild_member_json));
+        auto same_guild = response(200, modified_guild_member_json);
+        set_bucket_capacity(same_guild, "modify-member-guild-major");
+        env.transport.queue_response(std::move(same_guild));
+        discordcpp::GuildMemberModifyRequest changes;
+        changes.nick = discordcpp::Field<std::string>::null();
+        check(env.client.modify_guild_member(discordcpp::Snowflake{ 111 }, discordcpp::Snowflake{ 333 }, changes).has_value(),
+            "Modify Guild Member observes its first explicit route bucket");
+        check(env.client.modify_guild_member(discordcpp::Snowflake{ 112 }, discordcpp::Snowflake{ 333 }, changes).has_value() &&
+            env.scheduler.wait_count() == 0,
+            "Modify Guild Member keeps different Guild major resources isolated");
+        check(env.client.modify_guild_member(discordcpp::Snowflake{ 111 }, discordcpp::Snowflake{ 334 }, changes).has_value() &&
+            env.scheduler.wait_count() == 1,
+            "Modify Guild Member normalizes user ID under Guild major route metadata");
+    }
+    {
+        Environment env;
+        discordcpp::GuildMemberModifyRequest changes;
+        const auto result = env.client.modify_guild_member(discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, changes);
+        check(result.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(result.error()) &&
+            std::get<discordcpp::LocalValidationError>(result.error()).issue ==
+                discordcpp::LocalValidationIssue::invalid_request_body && env.transport.request_count() == 0,
+            "Modify Guild Member rejects an empty patch before dispatch");
+    }
+    {
+        Environment env;
+        discordcpp::GuildMemberModifyRequest changes;
+        changes.roles = discordcpp::Field<std::vector<discordcpp::Snowflake>>::with_value({ discordcpp::Snowflake{ 0 } });
+        const auto result = env.client.modify_guild_member(discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, changes);
+        check(result.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(result.error()) &&
+            env.transport.request_count() == 0,
+            "Modify Guild Member rejects zero role IDs before dispatch");
+    }
+    for (const auto& [status, body] : std::vector<std::pair<int, std::string>>{
+             { 204, "" }, { 202, R"json({})json" } }) {
+        Environment env;
+        env.transport.queue_response(response(status, body));
+        discordcpp::GuildMemberModifyRequest changes;
+        changes.nick = discordcpp::Field<std::string>::null();
+        const auto result = env.client.modify_guild_member(discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, changes);
+        check(result.has_error() && std::holds_alternative<discordcpp::TransportError>(result.error()) &&
+            std::get<discordcpp::TransportError>(result.error()).category == discordcpp::TransportFailureCategory::protocol,
+            "Modify Guild Member rejects success statuses other than documented 200");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(403, R"json({"code":50013,"message":"Missing Permissions"})json"));
+        discordcpp::GuildMemberModifyRequest changes;
+        changes.nick = discordcpp::Field<std::string>::with_value("new nick");
+        const auto result = env.client.modify_guild_member(discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, changes);
+        check(result.has_error() && std::holds_alternative<discordcpp::DiscordApiError>(result.error()),
+            "Modify Guild Member preserves Discord permission errors");
+    }
+    {
+        Environment env;
+        env.transport.queue_error({ discordcpp::TransportFailureCategory::connect, "fixture", false });
+        discordcpp::GuildMemberModifyRequest changes;
+        changes.nick = discordcpp::Field<std::string>::null();
+        const auto result = env.client.modify_guild_member(discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, changes);
+        check(result.has_error() && std::holds_alternative<discordcpp::TransportError>(result.error()),
+            "Modify Guild Member preserves transport failures");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(429, R"json({"retry_after":"bad"})json"));
+        discordcpp::GuildMemberModifyRequest changes;
+        changes.nick = discordcpp::Field<std::string>::null();
+        const auto result = env.client.modify_guild_member(discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, changes);
+        check(result.has_error() && std::holds_alternative<discordcpp::RateLimitMetadataError>(result.error()),
+            "Modify Guild Member preserves rate-limit metadata errors");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, ""));
+        discordcpp::GuildMemberModifyRequest changes;
+        changes.nick = discordcpp::Field<std::string>::null();
+        const auto result = env.client.modify_guild_member(discordcpp::Snowflake{ guild_id },
+            discordcpp::Snowflake{ user_id }, changes);
+        check(result.has_error() && std::holds_alternative<discordcpp::JsonParseError>(result.error()),
+            "Modify Guild Member does not decode an empty 200 body as an empty success");
+    }
+    for (const auto [guild, user] : std::vector<std::pair<std::uint64_t, std::uint64_t>>{
+             { 0, user_id }, { guild_id, 0 } }) {
+        Environment env;
+        discordcpp::GuildMemberModifyRequest changes;
+        changes.nick = discordcpp::Field<std::string>::null();
+        const auto result = env.client.modify_guild_member(discordcpp::Snowflake{ guild },
+            discordcpp::Snowflake{ user }, changes);
+        check(result.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(result.error()) &&
+            env.transport.request_count() == 0,
+            "Modify Guild Member rejects zero IDs before dispatch");
+    }
+}
+
 void test_successful_endpoint_requests() {
     Environment env;
     env.transport.queue_response(response(200, user_json));
@@ -698,6 +963,7 @@ int main() {
     test_guild_collection_endpoints();
     test_guild_member_endpoint();
     test_guild_role_endpoint();
+    test_guild_member_management_endpoints();
     if (failures == 0) {
         std::cout << "Passed " << checks << " Discord REST endpoint checks.\n";
         return 0;

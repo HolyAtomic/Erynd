@@ -491,6 +491,32 @@ Result<GuildMember, DiscordClientError> parse_guild_member_response(const HttpRe
     });
 }
 
+std::string encode_guild_member_modify_request(const GuildMemberModifyRequest& request) {
+    Json object = Json::object();
+    const auto encode_string_field = [&object](std::string_view key, const Field<std::string>& field) {
+        switch (field.state()) {
+            case FieldState::absent: return;
+            case FieldState::null: object[std::string{ key }] = nullptr; return;
+            case FieldState::value: object[std::string{ key }] = field.value(); return;
+        }
+    };
+    encode_string_field("nick", request.nick);
+    switch (request.roles.state()) {
+        case FieldState::absent:
+            break;
+        case FieldState::null:
+            object["roles"] = nullptr;
+            break;
+        case FieldState::value: {
+            Json roles = Json::array();
+            for (const auto role_id : request.roles.value()) roles.push_back(role_id.to_string());
+            object["roles"] = std::move(roles);
+            break;
+        }
+    }
+    return object.dump();
+}
+
 namespace {
 
 Result<Emoji, DiscordClientError> parse_emoji_response(const HttpResponse& response) {

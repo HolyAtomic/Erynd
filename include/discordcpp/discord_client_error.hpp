@@ -48,7 +48,8 @@ enum class LocalValidationIssue {
     reserved_request_header,
     token_unavailable,
     invalid_snowflake,
-    invalid_query_parameter
+    invalid_query_parameter,
+    invalid_request_body
 };
 
 /// Local input was rejected before transport dispatch.
