@@ -12,11 +12,13 @@ namespace discordcpp {
 enum class JsonDiagnosticCategory {
     syntax,
     invalid_encoding,
-    resource_limit
+    resource_limit,
+    processing_failure
 };
 
-/// A JSON decoding failure. For a successful HTTP response, status and headers
-/// identify the response without duplicating its potentially large body.
+/// A JSON decoding failure. offset is zero-based when available. For a
+/// successful HTTP response, status and headers identify the response without
+/// duplicating its potentially large body.
 struct JsonParseError final {
     JsonDiagnosticCategory category{ JsonDiagnosticCategory::syntax };
     std::optional<std::size_t> offset;

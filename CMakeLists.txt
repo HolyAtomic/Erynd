@@ -42,7 +42,10 @@ discordcpp_enable_private_warnings(discordcpp)
 if(DISCORDCPP_WITH_REST_API)
     find_package(nlohmann_json 3.12.0 CONFIG REQUIRED)
 
-    add_library(discordcpp_rest_api STATIC src/discord_rest_client.cpp)
+    add_library(discordcpp_rest_api STATIC
+        src/discord_rest_client.cpp
+        src/json_codec.cpp
+    )
     add_library(discordcpp::rest_api ALIAS discordcpp_rest_api)
     set_target_properties(discordcpp_rest_api PROPERTIES
         CXX_EXTENSIONS OFF
@@ -118,6 +121,8 @@ if(NOT DISCORDCPP_WITH_REST_API)
     list(APPEND discordcpp_header_excludes
         PATTERN "discord_rest_client.hpp" EXCLUDE
         PATTERN "discord_client_error.hpp" EXCLUDE
+        PATTERN "discord_models.hpp" EXCLUDE
+        PATTERN "field.hpp" EXCLUDE
         PATTERN "snowflake.hpp" EXCLUDE
     )
 endif()

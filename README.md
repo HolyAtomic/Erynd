@@ -83,6 +83,21 @@ concurrent reads, and will expose token views only during a synchronous request
 construction callback. Credentials will never be part of endpoint paths or
 diagnostic messages.
 
+The optional REST API component also provides intentionally partial models:
+
+- `User`: `id`, `username`, `global_name`, `avatar`, and `bot`.
+- `Guild`: `id`, `name`, `icon`, and `owner_id`.
+- `Channel`: `id`, `type`, `guild_id`, `name`, and `topic`.
+
+These are not complete Discord resource schemas. `Field<T>` distinguishes an
+omitted field, explicit JSON `null`, and a concrete value. Unknown response
+properties are ignored, while known fields are type-checked. `Guild.owner_id`
+and `Channel.guild_id` are non-nullable when present, matching Discord's
+schemas; the partial models can represent them as absent. Nullable fields keep
+their null state. Snowflakes are parsed only from decimal JSON strings and
+serialize internally as strings; numeric JSON IDs are rejected. JSON codecs
+remain private to the implementation and are not part of the public API.
+
 Installed consumers link `discordcpp::discordcpp` for the core alone, or add
 `discordcpp::curl_transport` to use `CurlHttpTransport`. The latter target
 requires libcurl to be installed for the consumer as well. Curl transport URLs

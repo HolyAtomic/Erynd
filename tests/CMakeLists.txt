@@ -12,6 +12,17 @@ if(DISCORDCPP_WITH_REST_API)
     set_target_properties(discordcpp_rest_api_tests PROPERTIES CXX_EXTENSIONS OFF)
     discordcpp_enable_private_warnings(discordcpp_rest_api_tests)
     add_test(NAME discordcpp.rest_api COMMAND discordcpp_rest_api_tests)
+
+    add_executable(discordcpp_model_tests test_models.cpp)
+    target_link_libraries(discordcpp_model_tests PRIVATE
+        discordcpp::rest_api
+        nlohmann_json::nlohmann_json
+    )
+    target_include_directories(discordcpp_model_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_compile_features(discordcpp_model_tests PRIVATE cxx_std_20)
+    set_target_properties(discordcpp_model_tests PROPERTIES CXX_EXTENSIONS OFF)
+    discordcpp_enable_private_warnings(discordcpp_model_tests)
+    add_test(NAME discordcpp.models COMMAND discordcpp_model_tests)
 endif()
 
 if(DISCORDCPP_WITH_CURL)
