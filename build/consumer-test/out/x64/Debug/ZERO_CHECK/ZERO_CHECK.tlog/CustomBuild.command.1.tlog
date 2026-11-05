@@ -1,0 +1,10 @@
+^C:\USERS\DD\ONEDRIVE\DESKTOP\DISCORDCPP\BUILD\CONSUMER-TEST\OUT\CMAKEFILES\3F5B26B4648F66C148C45CEA83A5B582\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/dd/OneDrive/Desktop/discordcpp/build/consumer-test -BC:/Users/dd/OneDrive/Desktop/discordcpp/build/consumer-test/out --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/dd/OneDrive/Desktop/discordcpp/build/consumer-test/out/DiscordCppPackageConsumer.slnx
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

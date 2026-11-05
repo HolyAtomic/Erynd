@@ -1,0 +1,11 @@
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/install/lib/discordcpp.lib
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/install/include/discordcpp/discord_error.hpp
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/install/include/discordcpp/http_types.hpp
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/install/include/discordcpp/rate_limit.hpp
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/install/include/discordcpp/rest_client.hpp
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/install/include/discordcpp/result.hpp
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/install/include/discordcpp/transport.hpp
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/install/lib/cmake/discordcpp/DiscordCppTargets.cmake
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/install/lib/cmake/discordcpp/DiscordCppTargets-debug.cmake
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/install/lib/cmake/discordcpp/DiscordCppConfig.cmake
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/install/lib/cmake/discordcpp/DiscordCppConfigVersion.cmake

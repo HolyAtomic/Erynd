@@ -1,0 +1,12 @@
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/CMakeFiles/Experimental.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/CMakeFiles/Nightly.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/CMakeFiles/Continuous.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/CMakeFiles/NightlyMemoryCheck.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/CMakeFiles/discordcpp.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/CMakeFiles/RUN_TESTS.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/CMakeFiles/INSTALL.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/CMakeFiles/ZERO_CHECK.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/tests/CMakeFiles/discordcpp_tests.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/tests/CMakeFiles/RUN_TESTS.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/tests/CMakeFiles/INSTALL.dir

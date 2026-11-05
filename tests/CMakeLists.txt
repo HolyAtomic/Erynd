@@ -1,0 +1,6 @@
+add_executable(discordcpp_tests test_main.cpp)
+target_link_libraries(discordcpp_tests PRIVATE discordcpp::discordcpp)
+target_compile_features(discordcpp_tests PRIVATE cxx_std_20)
+set_target_properties(discordcpp_tests PROPERTIES CXX_EXTENSIONS OFF)
+discordcpp_enable_private_warnings(discordcpp_tests)
+add_test(NAME discordcpp.unit COMMAND discordcpp_tests)

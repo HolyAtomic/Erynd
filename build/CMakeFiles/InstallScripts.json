@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/dd/OneDrive/Desktop/discordcpp/build/cmake_install.cmake",
+		"C:/Users/dd/OneDrive/Desktop/discordcpp/build/tests/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

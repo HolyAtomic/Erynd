@@ -1,0 +1,3 @@
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/consumer-test/out/CMakeFiles/package_consumer.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/consumer-test/out/CMakeFiles/ALL_BUILD.dir
+C:/Users/dd/OneDrive/Desktop/discordcpp/build/consumer-test/out/CMakeFiles/ZERO_CHECK.dir
