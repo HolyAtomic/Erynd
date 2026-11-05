@@ -1,13 +1,20 @@
 #include <discordcpp/discord_rest_client.hpp>
 #include <discordcpp/snowflake.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <stop_token>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -37,6 +44,191 @@ public:
         std::stop_token) override {}
     void notify_all() noexcept override {}
 };
+
+class TestTokenProvider final : public discordcpp::BotTokenProvider {
+public:
+    explicit TestTokenProvider(std::string token) : token_{ std::move(token) } {}
+
+    bool with_token(const TokenCallback& callback) const override {
+        std::lock_guard lock{ mutex_ };
+        callback(token_);
+        return true;
+    }
+
+    void rotate(std::string token) const {
+        std::lock_guard lock{ mutex_ };
+        token_ = std::move(token);
+    }
+
+private:
+    mutable std::mutex mutex_;
+    mutable std::string token_;
+};
+
+class ThrowingTokenProvider final : public discordcpp::BotTokenProvider {
+public:
+    bool with_token(const TokenCallback&) const override {
+        throw std::runtime_error("secret-token-must-not-escape");
+    }
+};
+
+void test_configuration_validation() {
+    discordcpp::DiscordApiConfig config{};
+    check(config.validate().has_value(), "default API config is valid");
+    config.api_origin = "https://example.test:8443";
+    check(config.validate().has_value(), "HTTPS DNS origin and numeric port are accepted");
+    config.api_origin = "http://discord.com";
+    check(config.validate().has_error() && config.validate().error().issue ==
+        discordcpp::LocalValidationIssue::invalid_api_origin, "non-HTTPS origin is rejected");
+    config.api_origin = "https://user:password@discord.com";
+    check(config.validate().has_error(), "origin credentials are rejected");
+    config.api_origin = "https://discord.com/path";
+    check(config.validate().has_error(), "origin path is rejected");
+    config.api_origin = "https://discord.com:99999";
+    check(config.validate().has_error(), "out-of-range origin port is rejected");
+    config.api_origin = "https://discord.com";
+    config.user_agent = "";
+    check(config.validate().has_error() && config.validate().error().issue ==
+        discordcpp::LocalValidationIssue::invalid_user_agent, "empty User-Agent is rejected");
+    config.user_agent = "agent\r\nX-Injected: yes";
+    check(config.validate().has_error(), "User-Agent header injection is rejected");
+    config.user_agent = "agent <>";
+    check(config.validate().has_error(), "malformed User-Agent product syntax is rejected");
+}
+
+void test_path_builder_safety() {
+    discordcpp::DiscordApiPathBuilder path{ 10 };
+    check(path.append_literal("channels").has_value(), "fixed path segment is accepted");
+    check(path.append_snowflake(discordcpp::Snowflake{ 123456789012345678ULL }).has_value(),
+        "Snowflake path parameter is accepted");
+    check(path.append_literal("messages").has_value(), "additional fixed path segment is accepted");
+    const auto built = path.finish();
+    check(built.has_value() && built.value() == "/api/v10/channels/123456789012345678/messages",
+        "path builder emits canonical versioned origin-form path");
+
+    discordcpp::DiscordApiPathBuilder encoded{ 10 };
+    check(encoded.append_literal("widgets").has_value(), "route literal setup succeeds");
+    check(encoded.append_parameter("a b%").has_value(), "safe parameter characters are percent-encoded");
+    const auto encoded_path = encoded.finish();
+    check(encoded_path.has_value() && encoded_path.value() == "/api/v10/widgets/a%20b%25",
+        "parameter encoding prevents path structure injection");
+
+    for (const std::string_view invalid : { "", ".", "..", "a/b", "a\\b", "a?b", "a#b", "x\r\ny" }) {
+        discordcpp::DiscordApiPathBuilder candidate{ 10 };
+        (void)candidate.append_literal("channels");
+        const auto added = candidate.append_parameter(invalid);
+        check(added.has_error() && added.error().issue == discordcpp::LocalValidationIssue::invalid_path_segment,
+            "empty, traversal, separator and control path parameters are rejected");
+    }
+    for (const std::string_view invalid_literal : { "fragment#x", "encoded%2Fslash" }) {
+        discordcpp::DiscordApiPathBuilder candidate{ 10 };
+        const auto added = candidate.append_literal(invalid_literal);
+        check(added.has_error(), "literal path segments cannot inject fragment or pre-escaped delimiters");
+    }
+    discordcpp::DiscordApiPathBuilder wrong_version{ 11 };
+    (void)wrong_version.append_literal("users");
+    (void)wrong_version.append_literal("@me");
+    check(wrong_version.finish().has_value(), "independently versioned path builder produces target");
+}
+
+void test_authenticated_request_construction_and_ownership() {
+    NullTransport transport;
+    discordcpp::RestClient rest_client{ transport };
+    TestScheduler scheduler;
+    discordcpp::RateLimitCoordinator coordinator{ discordcpp::RateLimitIdentity{ 3 }, scheduler };
+    auto provider = std::make_shared<TestTokenProvider>("alpha-token");
+    std::weak_ptr<const discordcpp::BotTokenProvider> weak_provider = provider;
+    discordcpp::DiscordRestClient client{ rest_client, coordinator, discordcpp::DiscordApiConfig{}, provider };
+    provider.reset();
+    check(!weak_provider.expired(), "client retains provider lifetime through shared ownership");
+
+    discordcpp::DiscordApiPathBuilder path{ 10 };
+    (void)path.append_literal("channels");
+    (void)path.append_snowflake(discordcpp::Snowflake{ 42 });
+    (void)path.append_literal("messages");
+    discordcpp::Headers headers;
+    headers.add("Content-Type", "application/json");
+    const auto deadline = discordcpp::SteadyClock::time_point{} + std::chrono::seconds{ 10 };
+    auto request = client.build_request("POST", path, headers, "{}", deadline);
+    check(request.has_value(), "authenticated request is constructed");
+    if (request.has_value()) {
+        check(request.value().headers.find("authorization") == std::optional<std::string_view>{ "Bot alpha-token" },
+            "request receives the Discord Bot authorization scheme");
+        check(request.value().headers.find("USER-AGENT") ==
+            std::optional<std::string_view>{ client.config().user_agent }, "configured User-Agent is installed");
+        check(request.value().headers.find("content-type") == std::optional<std::string_view>{ "application/json" },
+            "additional non-reserved headers are retained");
+        check(request.value().method == "POST" && request.value().target == "/api/v10/channels/42/messages" &&
+            request.value().body == "{}" && request.value().deadline == deadline,
+            "method, origin-form target, body, and deadline are preserved");
+    }
+
+    auto provider_shared = std::dynamic_pointer_cast<const TestTokenProvider>(weak_provider.lock());
+    provider_shared->rotate("beta-token");
+    const auto rotated = client.build_request("GET", "/users/@me");
+    check(rotated.has_value() && rotated.value().headers.find("authorization") ==
+        std::optional<std::string_view>{ "Bot beta-token" }, "subsequent requests observe synchronized token rotation");
+    check(request.has_value() && request.value().headers.find("authorization") ==
+        std::optional<std::string_view>{ "Bot alpha-token" }, "previous owned request header remains stable after rotation");
+
+    discordcpp::Headers auth_override;
+    auth_override.add("aUtHoRiZaTiOn", "Bot attacker");
+    const auto duplicate = client.build_request("GET", "/users/@me", auth_override);
+    check(duplicate.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(duplicate.error()) &&
+        std::get<discordcpp::LocalValidationError>(duplicate.error()).issue ==
+            discordcpp::LocalValidationIssue::reserved_request_header,
+        "caller cannot add or override Authorization");
+    check(duplicate.has_error() && std::get<discordcpp::LocalValidationError>(duplicate.error()).message.find("beta-token") ==
+        std::string::npos, "local request errors do not expose token values");
+
+    for (const auto header_name : { "User-Agent", "Host", "Content-Length", "Transfer-Encoding" }) {
+        discordcpp::Headers reserved;
+        reserved.add(header_name, "x");
+        check(client.build_request("GET", "/users/@me", reserved).has_error(),
+            "caller cannot override User-Agent or transport framing headers");
+    }
+
+    discordcpp::Headers invalid_control;
+    invalid_control.add("X-Test", std::string{ "bad\x01value", 9 });
+    check(client.build_request("GET", "/users/@me", invalid_control).has_error(),
+        "non-CRLF control characters in caller headers are rejected");
+
+    const auto bad_method = client.build_request("GET\r\nX: yes", "/users/@me");
+    check(bad_method.has_error() && std::get<discordcpp::LocalValidationError>(bad_method.error()).issue ==
+        discordcpp::LocalValidationIssue::invalid_http_method, "invalid HTTP method is rejected before dispatch");
+    const auto bad_path = client.build_request("GET", "https://discord.com/api/v10/users/@me");
+    check(bad_path.has_error() && std::get<discordcpp::LocalValidationError>(bad_path.error()).issue ==
+        discordcpp::LocalValidationIssue::invalid_endpoint_path, "absolute URL target is rejected");
+
+    discordcpp::DiscordApiPathBuilder mismatched_path{ 11 };
+    (void)mismatched_path.append_literal("users");
+    (void)mismatched_path.append_literal("@me");
+    const auto wrong_version = client.build_request("GET", mismatched_path);
+    check(wrong_version.has_error(), "path builder version cannot override the client's configured version");
+
+    std::atomic<int> successful_reads{};
+    std::vector<std::thread> readers;
+    for (int index = 0; index < 8; ++index) {
+        readers.emplace_back([&] {
+            const auto concurrent = client.build_request("GET", "/users/@me");
+            if (concurrent.has_value() && concurrent.value().headers.contains("authorization")) {
+                successful_reads.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+    for (auto& reader : readers) reader.join();
+    check(successful_reads.load(std::memory_order_relaxed) == 8,
+        "provider synchronization supports concurrent request construction");
+
+    ThrowingTokenProvider throwing_provider;
+    discordcpp::DiscordRestClient failing_client{ rest_client, coordinator,
+        discordcpp::DiscordApiConfig{},
+        std::shared_ptr<const discordcpp::BotTokenProvider>{ &throwing_provider, [](const auto*) {} } };
+    const auto unavailable = failing_client.build_request("GET", "/users/@me");
+    check(unavailable.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(unavailable.error()) &&
+        std::get<discordcpp::LocalValidationError>(unavailable.error()).message.find("secret-token-must-not-escape") ==
+            std::string::npos, "provider exceptions are suppressed without leaking diagnostic text");
+}
 
 void test_versioned_origin_form_targets() {
     const discordcpp::DiscordApiConfig config{};
@@ -126,12 +318,18 @@ void test_client_borrows_existing_orchestration_objects() {
     discordcpp::DiscordRestClient client{ rest_client, coordinator, discordcpp::DiscordApiConfig{ 10 } };
     check(client.config().api_version == 10,
         "DiscordRestClient accepts the existing RestClient and coordinator by reference");
+    discordcpp::DiscordRestClient empty_config_client{ rest_client, coordinator, {} };
+    check(empty_config_client.config().api_version == 10,
+        "existing empty-brace configuration constructor remains unambiguous");
 }
 
 } // namespace
 
 int main() {
     test_versioned_origin_form_targets();
+    test_configuration_validation();
+    test_path_builder_safety();
+    test_authenticated_request_construction_and_ownership();
     test_public_error_model_preserves_existing_errors();
     test_client_borrows_existing_orchestration_objects();
 

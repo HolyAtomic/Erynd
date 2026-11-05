@@ -77,11 +77,27 @@ authority/origin. For `CurlHttpTransport`, set `base_url` to
 users. The REST API component borrows its `RestClient` and
 `RateLimitCoordinator`; both must outlive it.
 
-Bot authentication and endpoint methods are not part of this foundation yet.
-The planned token provider will be owned by shared pointer, must support
-concurrent reads, and will expose token views only during a synchronous request
-construction callback. Credentials will never be part of endpoint paths or
-diagnostic messages.
+`DiscordRestClient` request construction accepts a shared `BotTokenProvider`.
+The application remains responsible for secret storage; a provider supplies a
+callback-scoped token view and must synchronize concurrent reads and rotation
+so the view remains valid until the callback returns. The client keeps shared
+ownership of the provider. Constructed requests own their `Authorization: Bot
+...` header, so a transient token copy is unavoidable at that boundary;
+transports may make further transient copies. No secure memory erasure is
+promised. Provider exceptions are suppressed and reported as a generic local
+token-unavailable error, without provider text.
+
+The API layer builds origin-form paths such as
+`/api/v10/channels/123/messages`; the transport owns the origin.
+`DiscordApiConfig::api_origin` is a validated expected origin and must match the
+configured transport origin (for curl, set `base_url` to
+`https://discord.com`). The default API version is 10 and the default
+User-Agent identifies Erynd++; versions must be positive but are not restricted
+to an allowlist. No implicit request timeout is added; pass an absolute
+`steady_clock` deadline when constructing a request. `DiscordApiPathBuilder`
+separates fixed route literals from encoded parameter segments and canonical
+Snowflake values. Request construction does not dispatch: future endpoint
+methods will continue through `RestClient` and `RateLimitCoordinator`.
 
 The optional REST API component also provides intentionally partial models:
 

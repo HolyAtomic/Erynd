@@ -39,7 +39,14 @@ struct ModelValidationError final {
 
 enum class LocalValidationIssue {
     invalid_api_version,
-    invalid_endpoint_path
+    invalid_endpoint_path,
+    invalid_api_origin,
+    invalid_user_agent,
+    invalid_http_method,
+    invalid_path_segment,
+    invalid_request_header,
+    reserved_request_header,
+    token_unavailable
 };
 
 /// Local input was rejected before transport dispatch.
