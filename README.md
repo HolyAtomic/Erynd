@@ -49,7 +49,7 @@ ctest --test-dir build -C Debug --output-on-failure
 
 The core has no required HTTP implementation dependency. The optional libcurl
 transport is built only when requested and requires a CMake-discoverable libcurl
-development package:
+7.84.0 or newer development package:
 
 ```bash
 cmake -S . -B build-curl -DBUILD_TESTING=ON -DDISCORDCPP_WITH_CURL=ON
@@ -63,8 +63,28 @@ requires libcurl to be installed for the consumer as well. Curl transport URLs
 are formed by appending each origin-form request target to its configured base
 URL; the default base is `https://discord.com/api/v10`. Each synchronous send
 uses its own curl handle, does not retry or follow redirects, verifies TLS, and
-honors request deadlines with cooperative cancellation. Configure a response
-body limit when responses are untrusted or may be large; the default is no cap.
+uses cooperative cancellation. Call `CurlHttpTransport::initialize()` during
+single-threaded application startup before calling `send()`. Initialization
+reports whether this runtime libcurl has thread-safe global initialization and
+asynchronous DNS. Sends require asynchronous/threaded DNS by default because
+every request has a connection timeout. Setting `require_async_dns_for_timeouts`
+to false opts into best-effort timeout behavior, because a blocking system
+resolver can exceed the deadline.
+Call `initialize()` before any other libcurl use in the process when the
+reported global-init capability is false; calling it during single-threaded
+startup is the safe default. Configured timeout values must fit libcurl's
+platform-specific `long` millisecond range. Far-future request deadlines use
+the steady-clock callback check instead of being shortened to that range.
+
+Caller-supplied `Host`, `Content-Length`, and `Transfer-Encoding` headers are
+rejected to avoid authority or body-framing conflicts; other valid custom
+headers are preserved. Response headers are bounded by defaults of 128 KiB
+total across interim and final response blocks, 256 fields total, and 16 KiB
+per field line. These limits can be adjusted in `CurlHttpTransportOptions`.
+Response bodies remain unlimited unless `max_response_body_bytes` is set.
+Each request gets a separate easy handle, which supports concurrent calls but
+does not reuse connections between sends. HTTP base URLs are allowed for local
+fixtures; credentials sent over non-loopback HTTP are transmitted in cleartext.
 
 ## Project Structure
 

@@ -15,6 +15,9 @@
 #include <vector>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -32,9 +35,10 @@ namespace test_support {
 class LocalHttpServer final {
 public:
     LocalHttpServer(int status, std::string body, std::vector<std::pair<std::string, std::string>> headers = {},
-        bool hold_response = false, std::vector<int> interim_statuses = {}) : status_{ status }, body_{ std::move(body) },
+        bool hold_response = false, std::vector<int> interim_statuses = {}, std::size_t expected_requests = 1) : status_{ status }, body_{ std::move(body) },
         headers_{ std::move(headers) }, interim_statuses_{ std::move(interim_statuses) },
-        hold_response_{ hold_response } {
+        hold_response_{ hold_response }, expected_requests_{ expected_requests } {
+        if (expected_requests_ == 0) throw std::invalid_argument("expected request count must be positive");
 #ifdef _WIN32
         WSADATA data{};
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0) throw std::runtime_error("WSAStartup failed");
@@ -54,7 +58,9 @@ public:
         address.sin_family = AF_INET;
         address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         address.sin_port = 0;
-        if (::bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 || ::listen(listener_, 1) != 0) {
+        const int backlog = static_cast<int>(std::min(expected_requests_, static_cast<std::size_t>(INT_MAX)));
+        if (::bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+            ::listen(listener_, backlog) != 0) {
             close_socket(listener_);
             throw std::runtime_error("loopback bind/listen failed");
         }
@@ -76,7 +82,7 @@ public:
         {
             std::lock_guard lock{ mutex_ };
             released_ = true;
-            needs_accept_wakeup = !request_received_;
+            needs_accept_wakeup = requests_.size() < expected_requests_;
         }
         condition_.notify_all();
         if (listener_ != invalid_socket && needs_accept_wakeup) {
@@ -93,7 +99,7 @@ public:
         if (listener_ != invalid_socket) shutdown_socket(listener_);
         if (worker_.joinable()) worker_.join();
         if (listener_ != invalid_socket) close_socket(std::exchange(listener_, invalid_socket));
-        if (client_ != invalid_socket) close_socket(std::exchange(client_, invalid_socket));
+        for (const auto client : clients_) close_socket(client);
 #ifdef _WIN32
         if (winsock_started_) WSACleanup();
 #endif
@@ -104,14 +110,20 @@ public:
 
     [[nodiscard]] std::string base_url() const { return "http://127.0.0.1:" + std::to_string(port_); }
 
-    [[nodiscard]] bool wait_for_request(std::chrono::milliseconds timeout = std::chrono::seconds{ 5 }) {
+    [[nodiscard]] bool wait_for_request(std::size_t count = 1,
+        std::chrono::milliseconds timeout = std::chrono::seconds{ 5 }) {
         std::unique_lock lock{ mutex_ };
-        return condition_.wait_for(lock, timeout, [this] { return request_received_; });
+        return condition_.wait_for(lock, timeout, [this, count] { return requests_.size() >= count; });
     }
 
     [[nodiscard]] std::string request() const {
         std::lock_guard lock{ mutex_ };
-        return request_;
+        return requests_.empty() ? std::string{} : requests_.front();
+    }
+
+    [[nodiscard]] std::vector<std::string> requests() const {
+        std::lock_guard lock{ mutex_ };
+        return requests_;
     }
 
 private:
@@ -163,25 +175,38 @@ private:
     }
 
     void serve() noexcept {
-        client_ = ::accept(listener_, nullptr, nullptr);
-        if (client_ == invalid_socket) return;
-        std::string request;
-        char buffer[4096];
-        std::size_t expected_total{};
-        while (true) {
-            const int received = socket_recv(client_, buffer, static_cast<int>(sizeof(buffer)));
-            if (received <= 0) return;
-            request.append(buffer, static_cast<std::size_t>(received));
-            const auto separator = request.find("\r\n\r\n");
-            if (separator != std::string::npos) {
-                expected_total = separator + 4 + content_length(std::string_view{ request }.substr(0, separator));
-                if (request.size() >= expected_total) break;
+        std::vector<Socket> connected;
+        std::vector<std::string> captured_requests;
+        for (std::size_t request_index = 0; request_index < expected_requests_; ++request_index) {
+            const Socket client = ::accept(listener_, nullptr, nullptr);
+            if (client == invalid_socket) {
+                for (const auto socket : connected) close_socket(socket);
+                return;
             }
+            connected.push_back(client);
+            std::string request;
+            char buffer[4096];
+            std::size_t expected_total{};
+            while (true) {
+                const int received = socket_recv(client, buffer, static_cast<int>(sizeof(buffer)));
+                if (received <= 0) {
+                    for (const auto socket : connected) close_socket(socket);
+                    close_socket(client);
+                    return;
+                }
+                request.append(buffer, static_cast<std::size_t>(received));
+                const auto separator = request.find("\r\n\r\n");
+                if (separator != std::string::npos) {
+                    expected_total = separator + 4 + content_length(std::string_view{ request }.substr(0, separator));
+                    if (request.size() >= expected_total) break;
+                }
+            }
+            captured_requests.push_back(std::move(request));
         }
         {
             std::lock_guard lock{ mutex_ };
-            request_ = std::move(request);
-            request_received_ = true;
+            requests_ = std::move(captured_requests);
+            clients_ = connected;
         }
         condition_.notify_all();
         if (hold_response_) {
@@ -202,13 +227,15 @@ private:
         if (!has_length) response += "Content-Length: " + std::to_string(body_.size()) + "\r\n";
         response += "Connection: close\r\n\r\n";
         response += body_;
-        std::size_t sent{};
-        while (sent < response.size()) {
-            const auto remaining = response.size() - sent;
-            const int chunk = static_cast<int>(std::min<std::size_t>(remaining, static_cast<std::size_t>(INT_MAX)));
-            const int count = socket_send(client_, response.data() + sent, chunk);
-            if (count <= 0) break;
-            sent += static_cast<std::size_t>(count);
+        for (const auto client : connected) {
+            std::size_t sent{};
+            while (sent < response.size()) {
+                const auto remaining = response.size() - sent;
+                const int chunk = static_cast<int>(std::min<std::size_t>(remaining, static_cast<std::size_t>(INT_MAX)));
+                const int count = socket_send(client, response.data() + sent, chunk);
+                if (count <= 0) break;
+                sent += static_cast<std::size_t>(count);
+            }
         }
     }
 
@@ -217,13 +244,13 @@ private:
     std::vector<std::pair<std::string, std::string>> headers_;
     std::vector<int> interim_statuses_;
     bool hold_response_{};
+    std::size_t expected_requests_{};
     mutable std::mutex mutex_;
     std::condition_variable condition_;
-    bool request_received_{};
     bool released_{};
-    std::string request_;
+    std::vector<std::string> requests_;
+    std::vector<Socket> clients_;
     Socket listener_{ invalid_socket };
-    Socket client_{ invalid_socket };
     std::uint16_t port_{};
     std::jthread worker_;
 #ifdef _WIN32

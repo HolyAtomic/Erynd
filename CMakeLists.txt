@@ -39,7 +39,7 @@ endfunction()
 discordcpp_enable_private_warnings(discordcpp)
 
 if(DISCORDCPP_WITH_CURL)
-    find_package(CURL REQUIRED)
+    find_package(CURL 7.84.0 REQUIRED)
 
     add_library(discordcpp_curl_transport STATIC src/curl_transport.cpp)
     add_library(discordcpp::curl_transport ALIAS discordcpp_curl_transport)

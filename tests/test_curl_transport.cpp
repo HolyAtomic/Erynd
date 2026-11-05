@@ -3,11 +3,16 @@
 #include "local_http_server.hpp"
 
 #include <chrono>
+#include <climits>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <stop_token>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
+#include <type_traits>
 #include <variant>
 
 namespace {
@@ -61,6 +66,31 @@ void test_get_headers_status_and_duplicate_response_fields() {
     }
 }
 
+void test_initialization_and_move_contract() {
+    static_assert(!std::is_move_constructible_v<discordcpp::CurlHttpTransport>);
+    static_assert(!std::is_move_assignable_v<discordcpp::CurlHttpTransport>);
+
+    discordcpp::CurlHttpTransport transport;
+    const auto before_initialization = transport.send({ "GET", "/not-dispatched", {}, {}, std::nullopt }, {});
+    const auto* uninitialized_error = error_of(before_initialization);
+    check(uninitialized_error && uninitialized_error->category == discordcpp::TransportFailureCategory::io &&
+        !uninitialized_error->request_may_have_reached_server,
+        "send before explicit libcurl initialization fails without dispatch");
+
+    const auto capabilities = discordcpp::CurlHttpTransport::initialize();
+    check(capabilities.has_value(), "explicit libcurl initialization succeeds");
+    if (capabilities) {
+        if (!capabilities.value().asynchronous_dns) {
+            discordcpp::CurlHttpTransport timed;
+            const auto rejected = timed.send({ "GET", "/dns-capability", {}, {}, std::nullopt }, {});
+            const auto* error = error_of(rejected);
+            check(error && error->category == discordcpp::TransportFailureCategory::io &&
+                !error->request_may_have_reached_server,
+                "timed requests are rejected before dispatch without async DNS");
+        }
+    }
+}
+
 void test_post_body_empty_body_and_redirect_policy() {
     {
         test_support::LocalHttpServer server{ 201, "created" };
@@ -98,6 +128,13 @@ void test_post_body_empty_body_and_redirect_policy() {
         check(server.wait_for_request() && server.request().find("GET /redirect-source HTTP/1.1") != std::string::npos,
             "redirect policy sends only the original request");
     }
+    {
+        test_support::LocalHttpServer server{ 500, "server-error" };
+        auto transport = make_transport(server);
+        auto response = transport.send({ "GET", "/http-error", {}, {}, std::nullopt }, {});
+        check(response.has_value() && response.value().status == 500 && response.value().body == "server-error",
+            "HTTP error statuses are returned as HTTP responses, not transport failures");
+    }
 }
 
 void test_invalid_request_and_connection_failure_mapping() {
@@ -111,6 +148,22 @@ void test_invalid_request_and_connection_failure_mapping() {
     const auto* target_error = error_of(invalid_target);
     check(target_error && target_error->category == discordcpp::TransportFailureCategory::protocol &&
         !target_error->request_may_have_reached_server, "absolute URL target is rejected before dispatch");
+
+    for (const auto& name : { "Content-Length", "transfer-encoding", "hOsT" }) {
+        const discordcpp::Headers forbidden{ { name, "1" } };
+        const auto result = transport.send({ "POST", "/framing", forbidden, "x", std::nullopt }, {});
+        const auto* error = error_of(result);
+        check(error && error->category == discordcpp::TransportFailureCategory::protocol &&
+            !error->request_may_have_reached_server, "caller-supplied framing and Host headers are rejected");
+    }
+    {
+        test_support::LocalHttpServer custom_header_server{ 200, "ok" };
+        auto custom_transport = make_transport(custom_header_server);
+        const auto result = custom_transport.send({ "GET", "/custom-header", { { "X-Allowed", "value" } }, {}, std::nullopt }, {});
+        check(result.has_value() && custom_header_server.wait_for_request() &&
+            custom_header_server.request().find("X-Allowed: value\r\n") != std::string::npos,
+            "legitimate custom request headers remain supported");
+    }
 
     discordcpp::CurlHttpTransportOptions options;
     options.base_url = "http://127.0.0.1:1";
@@ -133,6 +186,107 @@ void test_invalid_request_and_connection_failure_mapping() {
     const auto* limited_error = error_of(limited_result);
     check(limited_error && limited_error->category == discordcpp::TransportFailureCategory::io &&
         limited_error->request_may_have_reached_server, "configured response-size limit rejects an oversized response conservatively");
+}
+
+void test_response_header_limits_and_malformed_header_classification() {
+    {
+        test_support::LocalHttpServer server{ 200, "ok", { { "X-One", "1" } } };
+        auto options = discordcpp::CurlHttpTransportOptions{};
+        options.base_url = server.base_url();
+        options.max_response_header_bytes = 20;
+        discordcpp::CurlHttpTransport transport{ std::move(options) };
+        const auto result = transport.send({ "GET", "/header-byte-limit", {}, {}, std::nullopt }, {});
+        const auto* error = error_of(result);
+        check(error && error->category == discordcpp::TransportFailureCategory::io && error->request_may_have_reached_server,
+            "cumulative response header byte limit is enforced");
+    }
+    {
+        test_support::LocalHttpServer server{ 200, "ok", { { "X-One", "1" }, { "X-Two", "2" } } };
+        auto options = discordcpp::CurlHttpTransportOptions{};
+        options.base_url = server.base_url();
+        options.max_response_header_fields = 2;
+        discordcpp::CurlHttpTransport transport{ std::move(options) };
+        const auto result = transport.send({ "GET", "/header-field-count-limit", {}, {}, std::nullopt }, {});
+        const auto* error = error_of(result);
+        check(error && error->category == discordcpp::TransportFailureCategory::io,
+            "response header field count limit counts repeated fields");
+    }
+    {
+        test_support::LocalHttpServer server{ 200, "ok", { { "X-Large", "01234567890123456789" } } };
+        auto options = discordcpp::CurlHttpTransportOptions{};
+        options.base_url = server.base_url();
+        options.max_response_header_field_bytes = 16;
+        discordcpp::CurlHttpTransport transport{ std::move(options) };
+        const auto result = transport.send({ "GET", "/header-field-size-limit", {}, {}, std::nullopt }, {});
+        const auto* error = error_of(result);
+        check(error && error->category == discordcpp::TransportFailureCategory::io,
+            "individual response header field line limit is enforced");
+    }
+    {
+        test_support::LocalHttpServer server{ 200, "ok", { { "Bad Name", "value" } } };
+        auto options = discordcpp::CurlHttpTransportOptions{};
+        options.base_url = server.base_url();
+        discordcpp::CurlHttpTransport transport{ std::move(options) };
+        const auto result = transport.send({ "GET", "/malformed-header", {}, {}, std::nullopt }, {});
+        const auto* error = error_of(result);
+        check(error && error->category == discordcpp::TransportFailureCategory::protocol && error->diagnostic_code,
+            "malformed response header is classified as protocol with a diagnostic");
+    }
+    {
+        test_support::LocalHttpServer server{ 200, "ok", { { "X-Bad-Value", std::string{ "bad\0value", 9 } } } };
+        auto options = discordcpp::CurlHttpTransportOptions{};
+        options.base_url = server.base_url();
+        discordcpp::CurlHttpTransport transport{ std::move(options) };
+        const auto result = transport.send({ "GET", "/malformed-header-value", {}, {}, std::nullopt }, {});
+        const auto* error = error_of(result);
+        check(error && error->category == discordcpp::TransportFailureCategory::protocol,
+            "response header control bytes are rejected as malformed protocol");
+    }
+    {
+        test_support::LocalHttpServer server{ 200, "ok", { { "X-Final", "yes" } }, false, { 103 }, 1 };
+        auto options = discordcpp::CurlHttpTransportOptions{};
+        options.base_url = server.base_url();
+        options.max_response_header_fields = 3;
+        discordcpp::CurlHttpTransport transport{ std::move(options) };
+        const auto result = transport.send({ "GET", "/cumulative-interim-limit", {}, {}, std::nullopt }, {});
+        const auto* error = error_of(result);
+        check(error && error->category == discordcpp::TransportFailureCategory::io,
+            "response header field limit applies cumulatively across interim and final blocks");
+    }
+}
+
+void test_concurrent_calls_and_timeout_boundaries() {
+    {
+        test_support::LocalHttpServer server{ 200, "concurrent", {}, false, {}, 2 };
+        auto transport = make_transport(server);
+        std::optional<discordcpp::TransportResult> first;
+        std::optional<discordcpp::TransportResult> second;
+        std::jthread one{ [&] { first.emplace(transport.send({ "GET", "/one", {}, {}, std::nullopt }, {})); } };
+        std::jthread two{ [&] { second.emplace(transport.send({ "GET", "/two", {}, {}, std::nullopt }, {})); } };
+        check(server.wait_for_request(2), "one transport instance dispatches concurrent requests");
+        one.join();
+        two.join();
+        if (first && first->has_error()) std::cerr << "concurrent first transport error: " << first->error().message << '\n';
+        if (second && second->has_error()) std::cerr << "concurrent second transport error: " << second->error().message << '\n';
+        check(first && first->has_value() && second && second->has_value(),
+            "concurrent requests both complete successfully");
+        check(server.requests().size() == 2, "local fixture received both concurrent requests");
+    }
+    {
+        test_support::LocalHttpServer server{ 200, "far deadline" };
+        auto transport = make_transport(server);
+        const auto response = transport.send({ "GET", "/far-deadline", {}, {}, discordcpp::SteadyClock::time_point::max() }, {});
+        check(response.has_value() && response.value().status == 200,
+            "a representable far-future steady deadline is not shortened to LONG_MAX milliseconds");
+    }
+    if constexpr (std::numeric_limits<std::chrono::milliseconds::rep>::max() > LONG_MAX) {
+        discordcpp::CurlHttpTransportOptions options;
+        options.default_timeout = std::chrono::milliseconds{ static_cast<std::chrono::milliseconds::rep>(LONG_MAX) + 1 };
+        bool rejected{};
+        try { discordcpp::CurlHttpTransport invalid{ std::move(options) }; }
+        catch (const std::invalid_argument&) { rejected = true; }
+        check(rejected, "unrepresentable configured timeout is rejected instead of silently shortened");
+    }
 }
 
 void test_deadline_and_cancellation() {
@@ -185,10 +339,13 @@ void test_deadline_and_cancellation() {
 } // namespace
 
 int main() {
+    test_initialization_and_move_contract();
     test_get_headers_status_and_duplicate_response_fields();
     test_post_body_empty_body_and_redirect_policy();
     test_invalid_request_and_connection_failure_mapping();
+    test_response_header_limits_and_malformed_header_classification();
     test_deadline_and_cancellation();
+    test_concurrent_calls_and_timeout_boundaries();
     if (failures == 0) {
         std::cout << "Passed " << checks << " curl transport checks.\n";
         return 0;
