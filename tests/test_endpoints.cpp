@@ -111,6 +111,147 @@ const std::string user_json = R"json({"id":"123456789012345678","username":"eryn
 const std::string guild_json = R"json({"id":"223456789012345678","name":"guild","icon":null,"owner_id":"323456789012345678"})json";
 const std::string channel_json = R"json({"id":"423456789012345678","type":0,"guild_id":"223456789012345678","name":"general","topic":null})json";
 
+const std::string channel_collection_json = R"json([
+    {"id":"423456789012345678","type":0,"guild_id":"223456789012345678","name":"general","topic":null,"position":0},
+    {"id":"423456789012345679","type":2,"guild_id":"223456789012345678","name":"voice","position":1}
+])json";
+const std::string role_collection_json = R"json([
+    {"id":"523456789012345678","name":"@everyone","permissions":"1024","position":0,"color":0,"hoist":false,"managed":false,"mentionable":false},
+    {"id":"523456789012345679","name":"moderator","permissions":"18446744073709551616","position":1,"color":16711680,"hoist":true,"managed":false,"mentionable":true,"icon":null,"unicode_emoji":"🛡️"}
+])json";
+const std::string emoji_collection_json = R"json([
+    {"id":"623456789012345678","name":"wave","roles":[],"require_colons":true,"managed":false,"animated":false,"available":true},
+    {"id":"623456789012345679","name":"dance","roles":["523456789012345679"],"animated":true}
+])json";
+
+template<typename Model, typename Call, typename Validate>
+void exercise_guild_collection_endpoint(std::string_view endpoint, std::string_view path_suffix,
+    std::string_view body, std::string_view malformed_element_body, Call call, Validate validate_models) {
+    constexpr std::uint64_t guild_id = 723456789012345678ULL;
+    const auto expected_target = "/api/v10/guilds/" + std::to_string(guild_id) + std::string{ path_suffix };
+
+    {
+        Environment env;
+        env.transport.queue_response(response(200, std::string{ body }));
+        const auto result = call(env, discordcpp::Snowflake{ guild_id });
+        check(result.has_value() && result.value().size() == 2,
+            std::string{ endpoint } + " decodes multiple elements into a complete typed collection");
+        if (result.has_value()) validate_models(result.value());
+        const auto requests = env.transport.requests();
+        check(requests.size() == 1 && requests.front().method == "GET" &&
+            requests.front().target == expected_target && requests.front().body.empty(),
+            std::string{ endpoint } + " sends GET to the exact versioned origin-form path");
+        if (requests.size() == 1) {
+            check(requests.front().headers.find("authorization") ==
+                std::optional<std::string_view>{ "Bot endpoint-test-token" } &&
+                requests.front().headers.find("user-agent").has_value(),
+                std::string{ endpoint } + " uses the authenticated request builder");
+        }
+        check(env.transport.request_order() == std::vector<std::string>{ expected_target },
+            std::string{ endpoint } + " preserves its single dispatch order");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, "[]"));
+        const auto result = call(env, discordcpp::Snowflake{ guild_id });
+        check(result.has_value() && result.value().empty(),
+            std::string{ endpoint } + " decodes an empty collection");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, "{"));
+        const auto result = call(env, discordcpp::Snowflake{ guild_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::JsonParseError>(result.error()),
+            std::string{ endpoint } + " reports malformed JSON as JsonParseError");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, std::string{ malformed_element_body }));
+        const auto result = call(env, discordcpp::Snowflake{ guild_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::ModelValidationError>(result.error()) &&
+            std::get<discordcpp::ModelValidationError>(result.error()).path == "/1/id",
+            std::string{ endpoint } + " rejects a malformed second element without returning a truncated collection");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(403, R"json({"code":50001,"message":"Missing Access"})json"));
+        const auto result = call(env, discordcpp::Snowflake{ guild_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::DiscordApiError>(result.error()) &&
+            std::get<discordcpp::DiscordApiError>(result.error()).http_status == 403,
+            std::string{ endpoint } + " preserves Discord API errors");
+    }
+    {
+        Environment env;
+        env.transport.queue_error({ discordcpp::TransportFailureCategory::connect, "fixture failure", false });
+        const auto result = call(env, discordcpp::Snowflake{ guild_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::TransportError>(result.error()) &&
+            std::get<discordcpp::TransportError>(result.error()).category == discordcpp::TransportFailureCategory::connect,
+            std::string{ endpoint } + " preserves transport failures");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(429, R"json({"retry_after":"bad"})json"));
+        const auto result = call(env, discordcpp::Snowflake{ guild_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::RateLimitMetadataError>(result.error()),
+            std::string{ endpoint } + " preserves rate-limit metadata errors");
+    }
+    {
+        Environment env;
+        const auto result = call(env, discordcpp::Snowflake{ 0 });
+        check(result.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(result.error()) &&
+            std::get<discordcpp::LocalValidationError>(result.error()).issue ==
+                discordcpp::LocalValidationIssue::invalid_snowflake && env.transport.request_count() == 0,
+            std::string{ endpoint } + " rejects invalid guild IDs before dispatch");
+    }
+    {
+        Environment env;
+        auto first = response(200, std::string{ body });
+        set_bucket_capacity(first, std::string{ endpoint } + "-major-resource");
+        env.transport.queue_response(std::move(first));
+        env.transport.queue_response(response(200, std::string{ body }));
+        auto same_guild_again = response(200, std::string{ body });
+        set_bucket_capacity(same_guild_again, std::string{ endpoint } + "-major-resource");
+        env.transport.queue_response(std::move(same_guild_again));
+        check(call(env, discordcpp::Snowflake{ 111 }).has_value(),
+            std::string{ endpoint } + " observes the guild-scoped route first");
+        check(call(env, discordcpp::Snowflake{ 222 }).has_value() && env.scheduler.wait_count() == 0,
+            std::string{ endpoint } + " keeps a different guild major resource isolated");
+        check(call(env, discordcpp::Snowflake{ 111 }).has_value() && env.scheduler.wait_count() == 1,
+            std::string{ endpoint } + " coordinates the same guild major resource with learned bucket metadata");
+    }
+}
+
+void test_guild_collection_endpoints() {
+    exercise_guild_collection_endpoint<discordcpp::Channel>("guild channels", "/channels",
+        channel_collection_json,
+        R"json([{"id":"1","type":0},{"id":7,"type":0}])json",
+        [](Environment& env, discordcpp::Snowflake guild_id) { return env.client.get_guild_channels(guild_id); },
+        [](const std::vector<discordcpp::Channel>& channels) {
+            check(channels[0].id.value() == 423456789012345678ULL && channels[1].id.value() == 423456789012345679ULL &&
+                channels[0].position.value() == 0 && channels[1].name.value() == "voice",
+                "channel IDs, optional position, and collection order decode correctly");
+        });
+    exercise_guild_collection_endpoint<discordcpp::Role>("guild roles", "/roles",
+        role_collection_json,
+        R"json([{"id":"1","name":"valid","permissions":"0","position":0,"color":0,"hoist":false,"managed":false,"mentionable":false},{"id":7,"name":"bad","permissions":"0","position":0,"color":0,"hoist":false,"managed":false,"mentionable":false}])json",
+        [](Environment& env, discordcpp::Snowflake guild_id) { return env.client.get_guild_roles(guild_id); },
+        [](const std::vector<discordcpp::Role>& roles) {
+            check(roles[0].id.value() == 523456789012345678ULL &&
+                roles[1].permissions == "18446744073709551616" && roles[1].icon.is_null() &&
+                roles[1].unicode_emoji.value() == "🛡️",
+                "role Snowflakes, wide permission strings, and nullable/optional fields decode correctly");
+        });
+    exercise_guild_collection_endpoint<discordcpp::Emoji>("guild emojis", "/emojis",
+        emoji_collection_json,
+        R"json([{"id":"1","name":"valid"},{"id":7,"name":"bad"}])json",
+        [](Environment& env, discordcpp::Snowflake guild_id) { return env.client.get_guild_emojis(guild_id); },
+        [](const std::vector<discordcpp::Emoji>& emojis) {
+            check(emojis[0].id.value() == 623456789012345678ULL && emojis[1].roles.value()[0].value() == 523456789012345679ULL &&
+                emojis[0].available.value() && emojis[1].animated.value() && emojis[1].managed.is_absent(),
+                "emoji Snowflakes, role references, optional flags, and collection order decode correctly");
+        });
+}
+
 void test_successful_endpoint_requests() {
     Environment env;
     env.transport.queue_response(response(200, user_json));
@@ -342,6 +483,7 @@ int main() {
     test_successful_endpoint_requests();
     test_error_propagation_and_local_rejection();
     test_explicit_route_metadata_and_coordination();
+    test_guild_collection_endpoints();
     if (failures == 0) {
         std::cout << "Passed " << checks << " Discord REST endpoint checks.\n";
         return 0;

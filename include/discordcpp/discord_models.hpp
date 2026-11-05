@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace discordcpp {
 
@@ -38,6 +39,34 @@ struct Channel final {
     Field<Snowflake> guild_id;
     Field<std::string> name;
     Field<std::string> topic;
+    Field<std::int32_t> position;
+};
+
+/// Deliberately partial subset of a Discord guild Role. Permission bits remain
+/// a decimal string so their wire representation is not narrowed to an integer.
+struct Role final {
+    Snowflake id{ 0 };
+    std::string name;
+    std::string permissions;
+    std::int32_t position{};
+    std::int32_t color{};
+    bool hoist{};
+    bool managed{};
+    bool mentionable{};
+    Field<std::string> icon;
+    Field<std::string> unicode_emoji;
+};
+
+/// Deliberately partial subset of a custom guild Emoji. The API may omit the
+/// optional roles and capability flags depending on the returned representation.
+struct Emoji final {
+    Snowflake id{ 0 };
+    std::string name;
+    Field<std::vector<Snowflake>> roles;
+    Field<bool> require_colons;
+    Field<bool> managed;
+    Field<bool> animated;
+    Field<bool> available;
 };
 
 } // namespace discordcpp

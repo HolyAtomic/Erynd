@@ -113,20 +113,25 @@ without changing existing no-query path behavior. Query values are encoded as
 components and cannot add raw query delimiters or change the origin/path. No
 arbitrary size limit is imposed by this builder.
 
-The first synchronous REST methods are `get_current_user()`,
-`get_guild(Snowflake)`, and `get_channel(Snowflake)`. They build authenticated
-GET requests, pass explicit normalized route metadata and typed major-resource
-IDs to the shared rate-limit coordinator, and decode responses into the partial
-`User`, `Guild`, and `Channel` models. Failures retain their `DiscordClientError`
-alternative; calls do not retry or replay. A zero guild or channel ID is
-rejected before dispatch. These initial methods do not provide query parameters
-or endpoint-specific options.
+The synchronous REST methods include `get_current_user()`,
+`get_guild(Snowflake)`, `get_channel(Snowflake)`, `get_guild_channels(Snowflake)`,
+`get_guild_roles(Snowflake)`, and `get_guild_emojis(Snowflake)`. They build
+authenticated GET requests, pass explicit normalized route metadata and typed
+guild/channel major-resource IDs to the shared rate-limit coordinator, and
+decode responses into partial models. Collection calls return vectors and fail
+the whole operation if any element is malformed. They do not retry or replay;
+zero resource IDs are rejected before dispatch. Guild channel listing follows
+Discord's documented response (guild channels, excluding threads).
 
 The optional REST API component also provides intentionally partial models:
 
 - `User`: `id`, `username`, `global_name`, `avatar`, and `bot`.
 - `Guild`: `id`, `name`, `icon`, and `owner_id`.
-- `Channel`: `id`, `type`, `guild_id`, `name`, and `topic`.
+- `Channel`: `id`, `type`, `guild_id`, `name`, `topic`, and `position`.
+- `Role`: `id`, `name`, `permissions`, `position`, `color`, `hoist`, `managed`,
+  `mentionable`, `icon`, and `unicode_emoji`.
+- `Emoji`: `id`, `name`, `roles`, `require_colons`, `managed`, `animated`, and
+  `available`.
 
 These are not complete Discord resource schemas. `Field<T>` distinguishes an
 omitted field, explicit JSON `null`, and a concrete value. Unknown response
@@ -136,6 +141,12 @@ schemas; the partial models can represent them as absent. Nullable fields keep
 their null state. Snowflakes are parsed only from decimal JSON strings and
 serialize internally as strings; numeric JSON IDs are rejected. JSON codecs
 remain private to the implementation and are not part of the public API.
+Guild collection methods use Discord's distinct collection response schemas:
+[`Get Guild Channels`](https://discord.com/developers/docs/resources/guild#get-guild-channels)
+returns channel objects and excludes threads, [`Get Guild Roles`](https://discord.com/developers/docs/resources/guild#get-guild-roles)
+returns role objects, and [`List Guild Emojis`](https://discord.com/developers/docs/resources/emoji#list-guild-emojis)
+returns emoji objects. The models remain partial; other response fields are
+ignored unless explicitly represented above.
 
 Installed consumers link `discordcpp::discordcpp` for the core alone, or add
 `discordcpp::curl_transport` to use `CurlHttpTransport`. The latter target

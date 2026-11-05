@@ -199,6 +199,40 @@ void test_channel_model() {
         "out-of-range Channel type is rejected");
 }
 
+void test_guild_collection_models() {
+    const auto channels = discordcpp::detail::parse_channel_collection_response(response(
+        R"json([{"id":"300","type":0,"position":0,"future":{"x":1}},{"id":"301","type":2}])json"));
+    check(channels.has_value() && channels.value().size() == 2 && channels.value()[0].position.value() == 0 &&
+        channels.value()[1].position.is_absent(),
+        "channel collection preserves optional position, element order, and ignores unknown fields");
+    check(is_model_error(discordcpp::detail::parse_channel_collection_response(response(
+        R"json([{"id":"300","type":0},{"id":7,"type":2}])json")), "/1/id"),
+        "channel collection identifies an invalid later element without returning a partial vector");
+
+    const auto roles = discordcpp::detail::parse_role_collection_response(response(
+        R"json([{"id":"400","name":"@everyone","permissions":"0","position":0,"color":0,"hoist":false,"managed":false,"mentionable":false},{"id":"401","name":"admin","permissions":"18446744073709551616","position":1,"color":16777215,"hoist":true,"managed":false,"mentionable":true,"icon":null,"future":true}])json"));
+    check(roles.has_value() && roles.value().size() == 2 &&
+        roles.value()[1].permissions == "18446744073709551616" && roles.value()[1].icon.is_null(),
+        "role collection preserves wide decimal permission strings and nullable fields");
+    check(is_model_error(discordcpp::detail::parse_role_collection_response(response(
+        R"json([{"id":"400","name":"role","permissions":0,"position":0,"color":0,"hoist":false,"managed":false,"mentionable":false}])json")),
+        "/0/permissions"), "role permissions must retain Discord's decimal string representation");
+
+    const auto emojis = discordcpp::detail::parse_emoji_collection_response(response(
+        R"json([{"id":"500","name":"wave","roles":[],"require_colons":true,"managed":false,"animated":false,"available":true},{"id":"501","name":"dance","roles":["401"],"animated":true,"future":null}])json"));
+    check(emojis.has_value() && emojis.value().size() == 2 && emojis.value()[1].roles.value()[0].value() == 401 &&
+        emojis.value()[1].animated.value() && emojis.value()[1].available.is_absent(),
+        "emoji collection preserves optional role references and capability flags");
+    check(is_model_error(discordcpp::detail::parse_emoji_collection_response(response(
+        R"json([{"id":"500","name":"wave","roles":"401"}])json")), "/0/roles"),
+        "emoji role references must be an array of decimal Snowflake strings");
+    check(is_model_error(discordcpp::detail::parse_emoji_collection_response(response("{}")), ""),
+        "guild collection endpoints reject an object root instead of treating it as an empty list");
+    check(discordcpp::detail::parse_emoji_collection_response(response("[]")).has_value() &&
+        discordcpp::detail::parse_emoji_collection_response(response("[]")).value().empty(),
+        "empty Discord collection payloads decode to empty vectors");
+}
+
 void test_json_errors_and_snowflake_json_representation() {
     auto malformed_response = response(R"({"id":"1","username":)");
     malformed_response.status = 200;
@@ -253,6 +287,7 @@ int main() {
     test_user_model();
     test_guild_model();
     test_channel_model();
+    test_guild_collection_models();
     test_json_errors_and_snowflake_json_representation();
 
     if (failures == 0) {

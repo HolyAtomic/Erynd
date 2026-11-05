@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <stop_token>
 
 namespace discordcpp {
@@ -137,6 +138,21 @@ public:
     /// GET /channels/{channel_id}. Zero is rejected locally because it is not a
     /// usable Discord channel identifier. The route is explicitly keyed by channel.
     [[nodiscard]] Result<Channel, DiscordClientError> get_channel(Snowflake channel_id,
+        std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
+    /// GET /guilds/{guild_id}/channels. Threads are not included by this Discord endpoint.
+    [[nodiscard]] Result<std::vector<Channel>, DiscordClientError> get_guild_channels(Snowflake guild_id,
+        std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
+    /// GET /guilds/{guild_id}/roles.
+    [[nodiscard]] Result<std::vector<Role>, DiscordClientError> get_guild_roles(Snowflake guild_id,
+        std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
+    /// GET /guilds/{guild_id}/emojis.
+    [[nodiscard]] Result<std::vector<Emoji>, DiscordClientError> get_guild_emojis(Snowflake guild_id,
         std::optional<SteadyClock::time_point> deadline = std::nullopt,
         std::stop_token cancellation = {}) const;
 

@@ -154,6 +154,61 @@ Result<std::int32_t, ModelValidationError> as_channel_type(const Json& value, co
     return Result<std::int32_t, ModelValidationError>::success(static_cast<std::int32_t>(number));
 }
 
+Result<std::int32_t, ModelValidationError> as_int32(const Json& value, const HttpResponse& response,
+    const std::string& path, std::string_view field_name) {
+    if (!value.is_number_integer()) {
+        return Result<std::int32_t, ModelValidationError>::failure(
+            model_error(response, path, std::string{ field_name } + " must be an integer"));
+    }
+    if (value.is_number_unsigned()) {
+        const auto number = value.get<std::uint64_t>();
+        if (number > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+            return Result<std::int32_t, ModelValidationError>::failure(
+                model_error(response, path, std::string{ field_name } + " is outside int32 range"));
+        }
+        return Result<std::int32_t, ModelValidationError>::success(static_cast<std::int32_t>(number));
+    }
+    const auto number = value.get<std::int64_t>();
+    if (number < std::numeric_limits<std::int32_t>::min() ||
+        number > std::numeric_limits<std::int32_t>::max()) {
+        return Result<std::int32_t, ModelValidationError>::failure(
+            model_error(response, path, std::string{ field_name } + " is outside int32 range"));
+    }
+    return Result<std::int32_t, ModelValidationError>::success(static_cast<std::int32_t>(number));
+}
+
+Result<std::string, ModelValidationError> as_permission_bits(const Json& value, const HttpResponse& response,
+    const std::string& path) {
+    if (!value.is_string()) {
+        return Result<std::string, ModelValidationError>::failure(
+            model_error(response, path, "permissions must be a decimal JSON string"));
+    }
+    const auto& text = value.get_ref<const std::string&>();
+    if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) {
+        return Result<std::string, ModelValidationError>::failure(
+            model_error(response, path, "permissions must contain decimal digits"));
+    }
+    return Result<std::string, ModelValidationError>::success(text);
+}
+
+Result<std::vector<Snowflake>, ModelValidationError> as_snowflake_array(const Json& value,
+    const HttpResponse& response, const std::string& path) {
+    if (!value.is_array()) {
+        return Result<std::vector<Snowflake>, ModelValidationError>::failure(
+            model_error(response, path, "field must be an array of snowflake strings"));
+    }
+    std::vector<Snowflake> result;
+    result.reserve(value.size());
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        auto parsed = as_snowflake(value[index], response, path + "/" + std::to_string(index));
+        if (!parsed.has_value()) {
+            return Result<std::vector<Snowflake>, ModelValidationError>::failure(std::move(parsed).error());
+        }
+        result.push_back(std::move(parsed).value());
+    }
+    return Result<std::vector<Snowflake>, ModelValidationError>::success(std::move(result));
+}
+
 template<typename Model, typename Populate>
 Result<Model, DiscordClientError> parse_model(const HttpResponse& response, Populate&& populate) {
     auto parsed = parse_document(response);
@@ -184,6 +239,61 @@ Result<Model, DiscordClientError> parse_model(const HttpResponse& response, Popu
             std::in_place_type<JsonParseError>,
             parse_error(response, JsonDiagnosticCategory::processing_failure, std::nullopt,
                 "JSON model decoding failed")
+        });
+    }
+}
+
+template<typename Model, typename ParseItem>
+Result<std::vector<Model>, DiscordClientError> parse_collection_response(
+    const HttpResponse& response, ParseItem&& parse_item) {
+    auto parsed = parse_document(response);
+    if (!parsed.has_value()) {
+        return Result<std::vector<Model>, DiscordClientError>::failure(std::move(parsed).error());
+    }
+    if (!parsed.value().is_array()) {
+        return Result<std::vector<Model>, DiscordClientError>::failure(as_client_error(
+            model_error(response, "", "JSON response must be an array")));
+    }
+
+    try {
+        std::vector<Model> models;
+        models.reserve(parsed.value().size());
+        for (std::size_t index = 0; index < parsed.value().size(); ++index) {
+            if (!parsed.value()[index].is_object()) {
+                return Result<std::vector<Model>, DiscordClientError>::failure(as_client_error(
+                    model_error(response, "/" + std::to_string(index), "collection element must be an object")));
+            }
+            HttpResponse element_response = response;
+            element_response.body = parsed.value()[index].dump();
+            auto element = parse_item(element_response);
+            if (!element.has_value()) {
+                auto error = std::move(element).error();
+                if (auto* validation = std::get_if<ModelValidationError>(&error)) {
+                    const auto suffix = validation->path;
+                    validation->path = "/" + std::to_string(index) + suffix;
+                }
+                return Result<std::vector<Model>, DiscordClientError>::failure(std::move(error));
+            }
+            models.push_back(std::move(element).value());
+        }
+        return Result<std::vector<Model>, DiscordClientError>::success(std::move(models));
+    } catch (const std::bad_alloc&) {
+        return Result<std::vector<Model>, DiscordClientError>::failure(DiscordClientError{
+            std::in_place_type<JsonParseError>,
+            parse_error(response, JsonDiagnosticCategory::resource_limit, std::nullopt,
+                "JSON collection decoding exceeded available memory")
+        });
+    } catch (const std::exception&) {
+        return Result<std::vector<Model>, DiscordClientError>::failure(DiscordClientError{
+            std::in_place_type<JsonParseError>,
+            parse_error(response, JsonDiagnosticCategory::processing_failure, std::nullopt,
+                "JSON collection decoding failed")
+        });
+    } catch (...) {
+        return Result<std::vector<Model>, DiscordClientError>::failure(DiscordClientError{
+            std::in_place_type<JsonParseError>,
+            parse_error(response, JsonDiagnosticCategory::processing_failure, std::nullopt,
+                "JSON collection decoding failed")
         });
     }
 }
@@ -249,13 +359,106 @@ Result<Channel, DiscordClientError> parse_channel_response(const HttpResponse& r
         if (failed<Channel>(name)) return Result<Channel, DiscordClientError>::failure(as_client_error(std::move(name).error()));
         auto topic = read_field<std::string>(object, responseNew, "topic", "/topic", true, as_string);
         if (failed<Channel>(topic)) return Result<Channel, DiscordClientError>::failure(as_client_error(std::move(topic).error()));
+        auto position = read_field<std::int32_t>(object, responseNew, "position", "/position", false,
+            [](const Json& value, const HttpResponse& responseValue, const std::string& path) {
+                return as_int32(value, responseValue, path, "channel position");
+            });
+        if (failed<Channel>(position)) return Result<Channel, DiscordClientError>::failure(as_client_error(std::move(position).error()));
         model.id = std::move(id).value();
         model.type = std::move(type).value();
         model.guild_id = std::move(guild_id).value();
         model.name = std::move(name).value();
         model.topic = std::move(topic).value();
+        model.position = std::move(position).value();
         return Result<Channel, DiscordClientError>::success(std::move(model));
     });
+}
+
+namespace {
+
+Result<Role, DiscordClientError> parse_role_response(const HttpResponse& response) {
+    return parse_model<Role>(response, [](const Json& object, const HttpResponse& responseNew) {
+        Role model{};
+        auto id = read_required<Snowflake>(object, responseNew, "id", "/id", as_snowflake);
+        if (failed<Role>(id)) return Result<Role, DiscordClientError>::failure(as_client_error(std::move(id).error()));
+        auto name = read_required<std::string>(object, responseNew, "name", "/name", as_string);
+        if (failed<Role>(name)) return Result<Role, DiscordClientError>::failure(as_client_error(std::move(name).error()));
+        auto permissions = read_required<std::string>(object, responseNew, "permissions", "/permissions", as_permission_bits);
+        if (failed<Role>(permissions)) return Result<Role, DiscordClientError>::failure(as_client_error(std::move(permissions).error()));
+        auto position = read_required<std::int32_t>(object, responseNew, "position", "/position",
+            [](const Json& value, const HttpResponse& responseValue, const std::string& path) {
+                return as_int32(value, responseValue, path, "role position");
+            });
+        if (failed<Role>(position)) return Result<Role, DiscordClientError>::failure(as_client_error(std::move(position).error()));
+        auto color = read_required<std::int32_t>(object, responseNew, "color", "/color",
+            [](const Json& value, const HttpResponse& responseValue, const std::string& path) {
+                return as_int32(value, responseValue, path, "role color");
+            });
+        if (failed<Role>(color)) return Result<Role, DiscordClientError>::failure(as_client_error(std::move(color).error()));
+        auto hoist = read_required<bool>(object, responseNew, "hoist", "/hoist", as_bool);
+        if (failed<Role>(hoist)) return Result<Role, DiscordClientError>::failure(as_client_error(std::move(hoist).error()));
+        auto managed = read_required<bool>(object, responseNew, "managed", "/managed", as_bool);
+        if (failed<Role>(managed)) return Result<Role, DiscordClientError>::failure(as_client_error(std::move(managed).error()));
+        auto mentionable = read_required<bool>(object, responseNew, "mentionable", "/mentionable", as_bool);
+        if (failed<Role>(mentionable)) return Result<Role, DiscordClientError>::failure(as_client_error(std::move(mentionable).error()));
+        auto icon = read_field<std::string>(object, responseNew, "icon", "/icon", true, as_string);
+        if (failed<Role>(icon)) return Result<Role, DiscordClientError>::failure(as_client_error(std::move(icon).error()));
+        auto unicode_emoji = read_field<std::string>(object, responseNew, "unicode_emoji", "/unicode_emoji", true, as_string);
+        if (failed<Role>(unicode_emoji)) return Result<Role, DiscordClientError>::failure(as_client_error(std::move(unicode_emoji).error()));
+        model.id = std::move(id).value();
+        model.name = std::move(name).value();
+        model.permissions = std::move(permissions).value();
+        model.position = std::move(position).value();
+        model.color = std::move(color).value();
+        model.hoist = std::move(hoist).value();
+        model.managed = std::move(managed).value();
+        model.mentionable = std::move(mentionable).value();
+        model.icon = std::move(icon).value();
+        model.unicode_emoji = std::move(unicode_emoji).value();
+        return Result<Role, DiscordClientError>::success(std::move(model));
+    });
+}
+
+Result<Emoji, DiscordClientError> parse_emoji_response(const HttpResponse& response) {
+    return parse_model<Emoji>(response, [](const Json& object, const HttpResponse& responseNew) {
+        Emoji model{};
+        auto id = read_required<Snowflake>(object, responseNew, "id", "/id", as_snowflake);
+        if (failed<Emoji>(id)) return Result<Emoji, DiscordClientError>::failure(as_client_error(std::move(id).error()));
+        auto name = read_required<std::string>(object, responseNew, "name", "/name", as_string);
+        if (failed<Emoji>(name)) return Result<Emoji, DiscordClientError>::failure(as_client_error(std::move(name).error()));
+        auto roles = read_field<std::vector<Snowflake>>(object, responseNew, "roles", "/roles", false, as_snowflake_array);
+        if (failed<Emoji>(roles)) return Result<Emoji, DiscordClientError>::failure(as_client_error(std::move(roles).error()));
+        auto require_colons = read_field<bool>(object, responseNew, "require_colons", "/require_colons", false, as_bool);
+        if (failed<Emoji>(require_colons)) return Result<Emoji, DiscordClientError>::failure(as_client_error(std::move(require_colons).error()));
+        auto managed = read_field<bool>(object, responseNew, "managed", "/managed", false, as_bool);
+        if (failed<Emoji>(managed)) return Result<Emoji, DiscordClientError>::failure(as_client_error(std::move(managed).error()));
+        auto animated = read_field<bool>(object, responseNew, "animated", "/animated", false, as_bool);
+        if (failed<Emoji>(animated)) return Result<Emoji, DiscordClientError>::failure(as_client_error(std::move(animated).error()));
+        auto available = read_field<bool>(object, responseNew, "available", "/available", false, as_bool);
+        if (failed<Emoji>(available)) return Result<Emoji, DiscordClientError>::failure(as_client_error(std::move(available).error()));
+        model.id = std::move(id).value();
+        model.name = std::move(name).value();
+        model.roles = std::move(roles).value();
+        model.require_colons = std::move(require_colons).value();
+        model.managed = std::move(managed).value();
+        model.animated = std::move(animated).value();
+        model.available = std::move(available).value();
+        return Result<Emoji, DiscordClientError>::success(std::move(model));
+    });
+}
+
+} // namespace
+
+Result<std::vector<Channel>, DiscordClientError> parse_channel_collection_response(const HttpResponse& response) {
+    return parse_collection_response<Channel>(response, parse_channel_response);
+}
+
+Result<std::vector<Role>, DiscordClientError> parse_role_collection_response(const HttpResponse& response) {
+    return parse_collection_response<Role>(response, parse_role_response);
+}
+
+Result<std::vector<Emoji>, DiscordClientError> parse_emoji_collection_response(const HttpResponse& response) {
+    return parse_collection_response<Emoji>(response, parse_emoji_response);
 }
 
 Json serialize_snowflake(const Snowflake& value) {
