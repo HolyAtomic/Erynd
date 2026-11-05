@@ -1,13 +1,13 @@
 #include <discordcpp/discord_rest_client.hpp>
 
-// Keep the selected JSON library private to the compiled REST API component.
-#include <nlohmann/json.hpp>
+#include "json_codec.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <exception>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace discordcpp {
@@ -148,6 +148,56 @@ DiscordClientError as_local(LocalValidationError error) {
     return DiscordClientError{ std::in_place_type<LocalValidationError>, std::move(error) };
 }
 
+void redact_secret(std::string& value, std::string_view secret) {
+    if (secret.empty()) return;
+    constexpr std::string_view replacement = "[REDACTED]";
+    std::size_t offset{};
+    while ((offset = value.find(secret, offset)) != std::string::npos) {
+        value.replace(offset, secret.size(), replacement);
+        offset += replacement.size();
+    }
+}
+
+void redact_headers(Headers& headers, std::string_view secret) {
+    Headers sanitized;
+    for (const auto& [name, original_value] : headers) {
+        auto value = original_value;
+        redact_secret(value, secret);
+        sanitized.add(name, std::move(value));
+    }
+    headers = std::move(sanitized);
+}
+
+void redact_api_error(DiscordApiError& error, std::string_view secret) {
+    redact_secret(error.message, secret);
+    redact_secret(error.raw_body, secret);
+    redact_headers(error.response_headers, secret);
+}
+
+void redact_client_error(DiscordClientError& error, std::string_view secret) {
+    std::visit([secret](auto& value) {
+        using Error = std::remove_cvref_t<decltype(value)>;
+        if constexpr (std::is_same_v<Error, DiscordApiError>) {
+            redact_api_error(value, secret);
+        } else if constexpr (std::is_same_v<Error, TransportError>) {
+            redact_secret(value.message, secret);
+        } else if constexpr (std::is_same_v<Error, RateLimitMetadataError>) {
+            redact_secret(value.message, secret);
+            if (value.response) redact_api_error(*value.response, secret);
+        } else if constexpr (std::is_same_v<Error, JsonParseError>) {
+            redact_secret(value.path, secret);
+            redact_secret(value.message, secret);
+            redact_headers(value.response_headers, secret);
+        } else if constexpr (std::is_same_v<Error, ModelValidationError>) {
+            redact_secret(value.path, secret);
+            redact_secret(value.message, secret);
+            redact_headers(value.response_headers, secret);
+        } else {
+            redact_secret(value.message, secret);
+        }
+    }, error);
+}
+
 } // namespace
 
 Result<void, LocalValidationError> DiscordApiConfig::validate() const {
@@ -280,6 +330,97 @@ DiscordRestClient::DiscordRestClient(RestClient& rest_client, RateLimitCoordinat
     DiscordApiConfig config, std::shared_ptr<const BotTokenProvider> token_provider) noexcept
     : rest_client_{ rest_client }, coordinator_{ coordinator }, config_{ std::move(config) },
       token_provider_{ std::move(token_provider) } {}
+
+Result<HttpResponse, DiscordClientError> DiscordRestClient::execute_get(
+    const DiscordApiPathBuilder& path, const RouteDescriptor& route,
+    std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const {
+    auto request = build_request("GET", path, {}, {}, deadline);
+    if (!request.has_value()) {
+        return Result<HttpResponse, DiscordClientError>::failure(std::move(request).error());
+    }
+
+    const auto authorization = request.value().headers.find("Authorization");
+    const std::string_view token = authorization && authorization->starts_with("Bot ")
+        ? authorization->substr(4) : std::string_view{};
+    auto response = [&]() {
+        try {
+            return rest_client_.execute(request.value(), route, coordinator_, cancellation);
+        } catch (...) {
+            RestError transport_error{ std::in_place_type<TransportError>, TransportError{
+                TransportFailureCategory::io, "HTTP transport raised an exception", true } };
+            return RestResult::failure(std::move(transport_error));
+        }
+    }();
+    if (response.state() == ResultState::valueless) {
+        return Result<HttpResponse, DiscordClientError>::failure(DiscordClientError{
+            std::in_place_type<TransportError>,
+            TransportError{ TransportFailureCategory::protocol,
+                "REST orchestration returned a valueless result", true }
+        });
+    }
+    if (response.has_error()) {
+        auto error = std::move(response).error();
+        if (error.valueless_by_exception()) {
+            return Result<HttpResponse, DiscordClientError>::failure(DiscordClientError{
+                std::in_place_type<TransportError>,
+                TransportError{ TransportFailureCategory::protocol,
+                    "REST orchestration returned a valueless error", true }
+            });
+        }
+        auto client_error = std::visit([](auto&& value) -> DiscordClientError {
+            using Error = std::remove_cvref_t<decltype(value)>;
+            return DiscordClientError{ std::in_place_type<Error>, std::forward<decltype(value)>(value) };
+        }, std::move(error));
+        redact_client_error(client_error, token);
+        return Result<HttpResponse, DiscordClientError>::failure(std::move(client_error));
+    }
+    return Result<HttpResponse, DiscordClientError>::success(std::move(response).value());
+}
+
+Result<User, DiscordClientError> DiscordRestClient::get_current_user(
+    std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const {
+    DiscordApiPathBuilder path{ config_.api_version };
+    (void)path.append_literal("users");
+    (void)path.append_literal("@me");
+    const RouteDescriptor route{ "GET", "/users/@me", {}, GlobalLimitClass::ordinary, std::nullopt };
+    auto response = execute_get(path, route, deadline, cancellation);
+    if (!response.has_value()) return Result<User, DiscordClientError>::failure(std::move(response).error());
+    return detail::parse_user_response(response.value());
+}
+
+Result<Guild, DiscordClientError> DiscordRestClient::get_guild(Snowflake guild_id,
+    std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const {
+    if (guild_id.value() == 0) {
+        return Result<Guild, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_snowflake, "guild ID must be non-zero")));
+    }
+    DiscordApiPathBuilder path{ config_.api_version };
+    (void)path.append_literal("guilds");
+    (void)path.append_snowflake(guild_id);
+    const RouteDescriptor route{ "GET", "/guilds/{guild_id}",
+        { MajorResource{ MajorResourceKind::guild, guild_id.to_string(), 0 } },
+        GlobalLimitClass::ordinary, std::nullopt };
+    auto response = execute_get(path, route, deadline, cancellation);
+    if (!response.has_value()) return Result<Guild, DiscordClientError>::failure(std::move(response).error());
+    return detail::parse_guild_response(response.value());
+}
+
+Result<Channel, DiscordClientError> DiscordRestClient::get_channel(Snowflake channel_id,
+    std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const {
+    if (channel_id.value() == 0) {
+        return Result<Channel, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_snowflake, "channel ID must be non-zero")));
+    }
+    DiscordApiPathBuilder path{ config_.api_version };
+    (void)path.append_literal("channels");
+    (void)path.append_snowflake(channel_id);
+    const RouteDescriptor route{ "GET", "/channels/{channel_id}",
+        { MajorResource{ MajorResourceKind::channel, channel_id.to_string(), 0 } },
+        GlobalLimitClass::ordinary, std::nullopt };
+    auto response = execute_get(path, route, deadline, cancellation);
+    if (!response.has_value()) return Result<Channel, DiscordClientError>::failure(std::move(response).error());
+    return detail::parse_channel_response(response.value());
+}
 
 Result<HttpRequest, DiscordClientError> DiscordRestClient::build_request(
     std::string_view method, std::string_view endpoint_path, const Headers& additional_headers,

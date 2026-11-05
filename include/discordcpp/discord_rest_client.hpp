@@ -1,6 +1,7 @@
 #pragma once
 
 #include <discordcpp/discord_client_error.hpp>
+#include <discordcpp/discord_models.hpp>
 #include <discordcpp/rate_limit.hpp>
 #include <discordcpp/rest_client.hpp>
 #include <discordcpp/result.hpp>
@@ -83,9 +84,10 @@ private:
 /// rate-limit coordinator; both objects must outlive this instance. The client
 /// adds no synchronization. Concurrent use requires the underlying transport,
 /// coordinator, and token provider to support it. It owns shared ownership of
-/// the provider. Request construction produces an owned request but does not
-/// dispatch it; future endpoint methods must use the existing RestClient and
-/// RateLimitCoordinator path.
+/// the provider. Each endpoint constructs an authenticated owned request and
+/// dispatches exactly once through RestClient's coordinated path. Calls are
+/// synchronous, do not retry, and return DiscordClientError alternatives for
+/// local validation, transport, API/rate-limit metadata, JSON, and model errors.
 class DiscordRestClient final {
 public:
     DiscordRestClient(RestClient& rest_client, RateLimitCoordinator& coordinator,
@@ -110,7 +112,29 @@ public:
         const Headers& additional_headers = {}, std::string body = {},
         std::optional<SteadyClock::time_point> deadline = std::nullopt) const;
 
+    /// GET /users/@me. The returned User is the supported partial model; parse
+    /// and schema failures retain HTTP response metadata in DiscordClientError.
+    [[nodiscard]] Result<User, DiscordClientError> get_current_user(
+        std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
+    /// GET /guilds/{guild_id}. Zero is rejected locally because it is not a
+    /// usable Discord guild identifier. The route is explicitly keyed by guild.
+    [[nodiscard]] Result<Guild, DiscordClientError> get_guild(Snowflake guild_id,
+        std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
+    /// GET /channels/{channel_id}. Zero is rejected locally because it is not a
+    /// usable Discord channel identifier. The route is explicitly keyed by channel.
+    [[nodiscard]] Result<Channel, DiscordClientError> get_channel(Snowflake channel_id,
+        std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
 private:
+    [[nodiscard]] Result<HttpResponse, DiscordClientError> execute_get(
+        const DiscordApiPathBuilder& path, const RouteDescriptor& route,
+        std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const;
+
     RestClient& rest_client_;
     RateLimitCoordinator& coordinator_;
     DiscordApiConfig config_;

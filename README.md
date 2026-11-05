@@ -86,6 +86,8 @@ ownership of the provider. Constructed requests own their `Authorization: Bot
 transports may make further transient copies. No secure memory erasure is
 promised. Provider exceptions are suppressed and reported as a generic local
 token-unavailable error, without provider text.
+The endpoint layer also redacts exact token occurrences from returned transport
+diagnostics and HTTP/API error bodies before exposing those errors.
 
 The API layer builds origin-form paths such as
 `/api/v10/channels/123/messages`; the transport owns the origin.
@@ -98,6 +100,15 @@ to an allowlist. No implicit request timeout is added; pass an absolute
 separates fixed route literals from encoded parameter segments and canonical
 Snowflake values. Request construction does not dispatch: future endpoint
 methods will continue through `RestClient` and `RateLimitCoordinator`.
+
+The first synchronous REST methods are `get_current_user()`,
+`get_guild(Snowflake)`, and `get_channel(Snowflake)`. They build authenticated
+GET requests, pass explicit normalized route metadata and typed major-resource
+IDs to the shared rate-limit coordinator, and decode responses into the partial
+`User`, `Guild`, and `Channel` models. Failures retain their `DiscordClientError`
+alternative; calls do not retry or replay. A zero guild or channel ID is
+rejected before dispatch. These initial methods do not provide query parameters
+or endpoint-specific options.
 
 The optional REST API component also provides intentionally partial models:
 

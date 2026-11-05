@@ -23,6 +23,13 @@ if(DISCORDCPP_WITH_REST_API)
     set_target_properties(discordcpp_model_tests PROPERTIES CXX_EXTENSIONS OFF)
     discordcpp_enable_private_warnings(discordcpp_model_tests)
     add_test(NAME discordcpp.models COMMAND discordcpp_model_tests)
+
+    add_executable(discordcpp_endpoint_tests test_endpoints.cpp)
+    target_link_libraries(discordcpp_endpoint_tests PRIVATE discordcpp::rest_api)
+    target_compile_features(discordcpp_endpoint_tests PRIVATE cxx_std_20)
+    set_target_properties(discordcpp_endpoint_tests PROPERTIES CXX_EXTENSIONS OFF)
+    discordcpp_enable_private_warnings(discordcpp_endpoint_tests)
+    add_test(NAME discordcpp.endpoints COMMAND discordcpp_endpoint_tests)
 endif()
 
 if(DISCORDCPP_WITH_CURL)
