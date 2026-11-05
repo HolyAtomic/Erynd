@@ -37,7 +37,7 @@ Not all Discord API features are implemented yet.
 ## Requirements
 
 - C++20 compatible compiler
-- CMake 3.20 or newer
+- CMake 3.24 or newer
 
 ## Building
 
@@ -46,6 +46,25 @@ cmake -S . -B build -DBUILD_TESTING=ON
 cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 ```
+
+The core has no required HTTP implementation dependency. The optional libcurl
+transport is built only when requested and requires a CMake-discoverable libcurl
+development package:
+
+```bash
+cmake -S . -B build-curl -DBUILD_TESTING=ON -DDISCORDCPP_WITH_CURL=ON
+cmake --build build-curl --config Debug
+ctest --test-dir build-curl -C Debug --output-on-failure
+```
+
+Installed consumers link `discordcpp::discordcpp` for the core alone, or add
+`discordcpp::curl_transport` to use `CurlHttpTransport`. The latter target
+requires libcurl to be installed for the consumer as well. Curl transport URLs
+are formed by appending each origin-form request target to its configured base
+URL; the default base is `https://discord.com/api/v10`. Each synchronous send
+uses its own curl handle, does not retry or follow redirects, verifies TLS, and
+honors request deadlines with cooperative cancellation. Configure a response
+body limit when responses are untrusted or may be large; the default is no cap.
 
 ## Project Structure
 
