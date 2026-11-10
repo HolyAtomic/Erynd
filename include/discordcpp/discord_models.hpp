@@ -95,4 +95,28 @@ struct GuildMemberModifyRequest final {
     Field<std::vector<Snowflake>> roles;
 };
 
+/// Deliberately partial subset of Discord's Message object, decoded from
+/// REST responses. `edited_timestamp` is required but nullable in the response;
+/// `flags` is optional and non-nullable. Timestamps retain their wire strings
+/// after strict RFC 3339 validation. Discord does not document `guild_id` as a
+/// Message object field, so it is intentionally not modeled here.
+///
+/// Attachments, embeds, components, stickers, polls, references, and other
+/// message-specific structures are currently omitted.
+struct Message final {
+    Snowflake id{ 0 };
+    Snowflake channel_id{ 0 };
+    User author;
+    std::string content;
+    std::string timestamp;
+    Field<std::string> edited_timestamp;
+    bool tts{};
+    bool mention_everyone{};
+    std::vector<User> mentions;
+    std::vector<Snowflake> mention_roles;
+    bool pinned{};
+    std::uint64_t type{};
+    Field<std::uint64_t> flags;
+};
+
 } // namespace discordcpp

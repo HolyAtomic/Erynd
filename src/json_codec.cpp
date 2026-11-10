@@ -17,6 +17,55 @@ ModelValidationError model_error(const HttpResponse& response, std::string path,
     return { std::move(path), std::move(message), response.status, response.headers };
 }
 
+bool valid_rfc3339_timestamp(std::string_view text) noexcept {
+    const auto digit = [text](std::size_t index) noexcept -> int {
+        if (index >= text.size() || text[index] < '0' || text[index] > '9') return -1;
+        return text[index] - '0';
+    };
+    const auto number = [&digit](std::size_t start, std::size_t count) noexcept -> int {
+        int value{};
+        for (std::size_t index = 0; index < count; ++index) {
+            const int current = digit(start + index);
+            if (current < 0) return -1;
+            value = value * 10 + current;
+        }
+        return value;
+    };
+    if (text.size() < 20 || text[4] != '-' || text[7] != '-' ||
+        (text[10] != 'T' && text[10] != 't') || text[13] != ':' || text[16] != ':') return false;
+
+    const int year = number(0, 4);
+    const int month = number(5, 2);
+    const int day = number(8, 2);
+    const int hour = number(11, 2);
+    const int minute = number(14, 2);
+    const int second = number(17, 2);
+    if (year < 0 || month < 1 || month > 12 || day < 1 || hour < 0 || hour > 23 ||
+        minute < 0 || minute > 59 || second < 0 || second > 60) return false;
+
+    constexpr int month_days[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    const bool leap_year = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    const int max_day = month_days[month - 1] + (month == 2 && leap_year ? 1 : 0);
+    if (day > max_day) return false;
+
+    std::size_t position = 19;
+    if (position < text.size() && text[position] == '.') {
+        ++position;
+        const std::size_t fraction_start = position;
+        while (position < text.size() && digit(position) >= 0) ++position;
+        if (position == fraction_start) return false;
+    }
+
+    if (position < text.size() && (text[position] == 'Z' || text[position] == 'z')) {
+        return position + 1 == text.size();
+    }
+    if (position + 6 != text.size() || (text[position] != '+' && text[position] != '-') ||
+        text[position + 3] != ':') return false;
+    const int offset_hour = number(position + 1, 2);
+    const int offset_minute = number(position + 4, 2);
+    return offset_hour >= 0 && offset_hour <= 23 && offset_minute >= 0 && offset_minute <= 59;
+}
+
 DiscordClientError as_client_error(ModelValidationError error) {
     return DiscordClientError{ std::in_place_type<ModelValidationError>, std::move(error) };
 }
@@ -131,6 +180,37 @@ Result<bool, ModelValidationError> as_bool(const Json& value, const HttpResponse
     return Result<bool, ModelValidationError>::success(value.get<bool>());
 }
 
+Result<std::uint64_t, ModelValidationError> as_uint64(const Json& value, const HttpResponse& response,
+    const std::string& path, std::string_view field_name) {
+    if (!value.is_number_integer()) {
+        return Result<std::uint64_t, ModelValidationError>::failure(
+            model_error(response, path, std::string{ field_name } + " must be a non-negative integer"));
+    }
+    if (value.is_number_unsigned()) {
+        return Result<std::uint64_t, ModelValidationError>::success(value.get<std::uint64_t>());
+    }
+    const auto number = value.get<std::int64_t>();
+    if (number < 0) {
+        return Result<std::uint64_t, ModelValidationError>::failure(
+            model_error(response, path, std::string{ field_name } + " must be a non-negative integer"));
+    }
+    return Result<std::uint64_t, ModelValidationError>::success(static_cast<std::uint64_t>(number));
+}
+
+Result<std::string, ModelValidationError> as_rfc3339_timestamp(const Json& value,
+    const HttpResponse& response, const std::string& path) {
+    if (!value.is_string()) {
+        return Result<std::string, ModelValidationError>::failure(
+            model_error(response, path, "timestamp must be a string"));
+    }
+    const auto& timestamp = value.get_ref<const std::string&>();
+    if (!valid_rfc3339_timestamp(timestamp)) {
+        return Result<std::string, ModelValidationError>::failure(
+            model_error(response, path, "timestamp must be a valid RFC 3339 date-time"));
+    }
+    return Result<std::string, ModelValidationError>::success(timestamp);
+}
+
 Result<std::int32_t, ModelValidationError> as_channel_type(const Json& value, const HttpResponse& response,
     const std::string& path) {
     if (!value.is_number_integer()) {
@@ -243,6 +323,24 @@ Result<User, ModelValidationError> as_user(const Json& value, const HttpResponse
     user.avatar = std::move(avatar).value();
     user.bot = std::move(bot).value();
     return Result<User, ModelValidationError>::success(std::move(user));
+}
+
+Result<std::vector<User>, ModelValidationError> as_user_array(const Json& value,
+    const HttpResponse& response, const std::string& path) {
+    if (!value.is_array()) {
+        return Result<std::vector<User>, ModelValidationError>::failure(
+            model_error(response, path, "field must be an array of user objects"));
+    }
+    std::vector<User> result;
+    result.reserve(value.size());
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        auto parsed = as_user(value[index], response, path + "/" + std::to_string(index));
+        if (!parsed.has_value()) {
+            return Result<std::vector<User>, ModelValidationError>::failure(std::move(parsed).error());
+        }
+        result.push_back(std::move(parsed).value());
+    }
+    return Result<std::vector<User>, ModelValidationError>::success(std::move(result));
 }
 
 template<typename Model, typename Populate>
@@ -488,6 +586,64 @@ Result<GuildMember, DiscordClientError> parse_guild_member_response(const HttpRe
         model.pending = std::move(pending).value();
         model.permissions = std::move(permissions).value();
         return Result<GuildMember, DiscordClientError>::success(std::move(model));
+    });
+}
+
+Result<Message, DiscordClientError> parse_message_response(const HttpResponse& response) {
+    return parse_model<Message>(response, [](const Json& object, const HttpResponse& responseNew) {
+        Message model{};
+        auto id = read_required<Snowflake>(object, responseNew, "id", "/id", as_snowflake);
+        if (failed<Message>(id)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(id).error()));
+        auto channel_id = read_required<Snowflake>(object, responseNew, "channel_id", "/channel_id", as_snowflake);
+        if (failed<Message>(channel_id)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(channel_id).error()));
+        auto author = read_required<User>(object, responseNew, "author", "/author", as_user);
+        if (failed<Message>(author)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(author).error()));
+        auto content = read_required<std::string>(object, responseNew, "content", "/content", as_string);
+        if (failed<Message>(content)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(content).error()));
+        auto timestamp = read_required<std::string>(object, responseNew, "timestamp", "/timestamp",
+            as_rfc3339_timestamp);
+        if (failed<Message>(timestamp)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(timestamp).error()));
+        auto edited_timestamp = read_required_field<std::string>(object, responseNew, "edited_timestamp",
+            "/edited_timestamp", true, as_rfc3339_timestamp);
+        if (failed<Message>(edited_timestamp)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(edited_timestamp).error()));
+        auto tts = read_required<bool>(object, responseNew, "tts", "/tts", as_bool);
+        if (failed<Message>(tts)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(tts).error()));
+        auto mention_everyone = read_required<bool>(object, responseNew, "mention_everyone",
+            "/mention_everyone", as_bool);
+        if (failed<Message>(mention_everyone)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(mention_everyone).error()));
+        auto mentions = read_required<std::vector<User>>(object, responseNew, "mentions", "/mentions",
+            as_user_array);
+        if (failed<Message>(mentions)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(mentions).error()));
+        auto mention_roles = read_required<std::vector<Snowflake>>(object, responseNew, "mention_roles",
+            "/mention_roles", as_snowflake_array);
+        if (failed<Message>(mention_roles)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(mention_roles).error()));
+        auto pinned = read_required<bool>(object, responseNew, "pinned", "/pinned", as_bool);
+        if (failed<Message>(pinned)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(pinned).error()));
+        auto type = read_required<std::uint64_t>(object, responseNew, "type", "/type",
+            [](const Json& value, const HttpResponse& responseValue, const std::string& path) {
+                return as_uint64(value, responseValue, path, "message type");
+            });
+        if (failed<Message>(type)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(type).error()));
+        auto flags = read_field<std::uint64_t>(object, responseNew, "flags", "/flags", false,
+            [](const Json& value, const HttpResponse& responseValue, const std::string& path) {
+                return as_uint64(value, responseValue, path, "message flags");
+            });
+        if (failed<Message>(flags)) return Result<Message, DiscordClientError>::failure(as_client_error(std::move(flags).error()));
+
+        model.id = std::move(id).value();
+        model.channel_id = std::move(channel_id).value();
+        model.author = std::move(author).value();
+        model.content = std::move(content).value();
+        model.timestamp = std::move(timestamp).value();
+        model.edited_timestamp = std::move(edited_timestamp).value();
+        model.tts = std::move(tts).value();
+        model.mention_everyone = std::move(mention_everyone).value();
+        model.mentions = std::move(mentions).value();
+        model.mention_roles = std::move(mention_roles).value();
+        model.pinned = std::move(pinned).value();
+        model.type = std::move(type).value();
+        model.flags = std::move(flags).value();
+        return Result<Message, DiscordClientError>::success(std::move(model));
     });
 }
 

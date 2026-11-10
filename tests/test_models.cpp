@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 namespace {
 
@@ -270,6 +271,142 @@ void test_guild_member_model() {
         "/permissions"), "GuildMember permissions must be a decimal string when present");
 }
 
+void test_message_model() {
+    const auto base = discordcpp::detail::Json::parse(R"json({
+        "id":"700000000000000001","channel_id":"700000000000000002",
+        "author":{"id":"700000000000000003","username":"author"},
+        "content":"","timestamp":"2025-01-02T03:04:05.123456+00:00",
+        "edited_timestamp":null,"tts":false,"mention_everyone":false,
+        "mentions":[],"mention_roles":[],"pinned":false,"type":0,
+        "guild_id":"700000000000000004","future_message_field":{"ignored":true}
+    })json");
+    const auto standard = discordcpp::detail::parse_message_response(response(base.dump()));
+    check(standard.has_value() && standard.value().id.value() == 700000000000000001ULL &&
+        standard.value().channel_id.value() == 700000000000000002ULL &&
+        standard.value().author.id.value() == 700000000000000003ULL &&
+        standard.value().content.empty() &&
+        standard.value().timestamp == "2025-01-02T03:04:05.123456+00:00" &&
+        standard.value().edited_timestamp.is_null() && standard.value().mentions.empty() &&
+        standard.value().mention_roles.empty() && standard.value().type == 0 &&
+        standard.value().flags.is_absent(),
+        "Message decodes required guild-style payload fields, empty content, nullable timestamp, and ignores unknown keys");
+
+    auto direct_message_json = base;
+    direct_message_json.erase("guild_id");
+    direct_message_json["content"] = "hello from a direct message";
+    direct_message_json["timestamp"] = "2025-01-02T03:04:05Z";
+    direct_message_json["edited_timestamp"] = "2025-01-02T04:05:06.7-03:30";
+    direct_message_json["mentions"] = discordcpp::detail::Json::array({
+        {{"id", "700000000000000005"}, {"username", "mentioned"}, {"avatar", nullptr}, {"future_user_key", true}}
+    });
+    direct_message_json["mention_roles"] = discordcpp::detail::Json::array({"700000000000000006"});
+    direct_message_json["flags"] = UINT64_MAX;
+    direct_message_json["type"] = 46;
+    const auto direct_message = discordcpp::detail::parse_message_response(response(direct_message_json.dump()));
+    check(direct_message.has_value() && direct_message.value().content == "hello from a direct message" &&
+        direct_message.value().edited_timestamp.has_value() &&
+        direct_message.value().edited_timestamp.value() == "2025-01-02T04:05:06.7-03:30" &&
+        direct_message.value().mentions.size() == 1 &&
+        direct_message.value().mentions[0].id.value() == 700000000000000005ULL &&
+        direct_message.value().mention_roles.size() == 1 &&
+        direct_message.value().mention_roles[0].value() == 700000000000000006ULL &&
+        direct_message.value().type == 46 && direct_message.value().flags.has_value() &&
+        direct_message.value().flags.value() == UINT64_MAX,
+        "Message handles direct-message shape, nested mentions, timestamp offsets, and full-width integers");
+
+    constexpr std::string_view required_fields[] = {
+        "id", "channel_id", "author", "content", "timestamp", "edited_timestamp", "tts",
+        "mention_everyone", "mentions", "mention_roles", "pinned", "type"
+    };
+    for (const auto field : required_fields) {
+        auto missing = base;
+        missing.erase(field);
+        const auto result = discordcpp::detail::parse_message_response(response(missing.dump()));
+        check(is_model_error(result, std::string{ "/" } + std::string{ field }),
+            std::string{ "missing required Message field is rejected: " } + std::string{ field });
+    }
+
+    auto incorrect_id = base;
+    incorrect_id["id"] = UINT64_C(700000000000000001);
+    check(is_model_error(discordcpp::detail::parse_message_response(response(incorrect_id.dump())), "/id"),
+        "numeric Message Snowflake is rejected");
+    auto malformed_id = base;
+    malformed_id["channel_id"] = "not-a-snowflake";
+    check(is_model_error(discordcpp::detail::parse_message_response(response(malformed_id.dump())), "/channel_id"),
+        "malformed Message Snowflake string is rejected");
+    auto overflowing_id = base;
+    overflowing_id["id"] = "18446744073709551616";
+    check(is_model_error(discordcpp::detail::parse_message_response(response(overflowing_id.dump())), "/id"),
+        "overflowing Message Snowflake string is rejected");
+
+    for (const auto& timestamp : std::vector<std::string>{
+             "2025-02-30T03:04:05Z", "2025-01-02T03:04:05", "2025-01-02T25:04:05Z",
+             "2025-01-02T03:04:05.Z", "not-a-timestamp" }) {
+        auto malformed = base;
+        malformed["timestamp"] = timestamp;
+        check(is_model_error(discordcpp::detail::parse_message_response(response(malformed.dump())), "/timestamp"),
+            "malformed Message timestamp is rejected");
+    }
+    auto malformed_edited_timestamp = base;
+    malformed_edited_timestamp["edited_timestamp"] = "2025-02-30T03:04:05Z";
+    check(is_model_error(discordcpp::detail::parse_message_response(response(malformed_edited_timestamp.dump())),
+        "/edited_timestamp"), "malformed nullable edited timestamp is rejected");
+    auto wrong_nullable_timestamp = base;
+    wrong_nullable_timestamp["edited_timestamp"] = 7;
+    check(is_model_error(discordcpp::detail::parse_message_response(response(wrong_nullable_timestamp.dump())),
+        "/edited_timestamp"), "edited_timestamp accepts only null or a valid timestamp string");
+
+    for (const auto* field : { "tts", "mention_everyone", "pinned" }) {
+        auto wrong_boolean = base;
+        wrong_boolean[field] = "false";
+        check(is_model_error(discordcpp::detail::parse_message_response(response(wrong_boolean.dump())),
+            "/" + std::string{ field }), std::string{ "incorrect Message boolean type is rejected: " } + field);
+    }
+    auto wrong_mentions = base;
+    wrong_mentions["mentions"] = discordcpp::detail::Json::array({"700000000000000003"});
+    check(is_model_error(discordcpp::detail::parse_message_response(response(wrong_mentions.dump())), "/mentions/0"),
+        "mentions elements must be valid User objects");
+    auto malformed_author = base;
+    malformed_author["author"]["username"] = false;
+    check(is_model_error(discordcpp::detail::parse_message_response(response(malformed_author.dump())),
+        "/author/username"), "malformed nested author rejects the entire Message");
+    auto wrong_roles = base;
+    wrong_roles["mention_roles"] = discordcpp::detail::Json::array({7});
+    check(is_model_error(discordcpp::detail::parse_message_response(response(wrong_roles.dump())), "/mention_roles/0"),
+        "mention role entries must be decimal Snowflake strings");
+
+    for (const auto& invalid_integer : std::vector<discordcpp::detail::Json>{
+             "1", -1, 1.5, discordcpp::detail::Json::parse("18446744073709551616") }) {
+        auto wrong_type = base;
+        wrong_type["type"] = invalid_integer;
+        check(is_model_error(discordcpp::detail::parse_message_response(response(wrong_type.dump())), "/type"),
+            "message type rejects string, negative, fractional, and overflowing values");
+    }
+    auto wrong_flags_type = base;
+    wrong_flags_type["flags"] = "1";
+    check(is_model_error(discordcpp::detail::parse_message_response(response(wrong_flags_type.dump())), "/flags"),
+        "message flags reject non-integer values");
+    auto negative_flags = base;
+    negative_flags["flags"] = -1;
+    check(is_model_error(discordcpp::detail::parse_message_response(response(negative_flags.dump())), "/flags"),
+        "message flags reject negative integer values");
+    auto fractional_flags = base;
+    fractional_flags["flags"] = 1.5;
+    check(is_model_error(discordcpp::detail::parse_message_response(response(fractional_flags.dump())), "/flags"),
+        "message flags reject fractional numeric values");
+    auto null_flags = base;
+    null_flags["flags"] = nullptr;
+    check(is_model_error(discordcpp::detail::parse_message_response(response(null_flags.dump())), "/flags"),
+        "optional non-nullable flags reject JSON null");
+    auto overflowing_flags = base;
+    overflowing_flags["flags"] = discordcpp::detail::Json::parse("18446744073709551616");
+    check(is_model_error(discordcpp::detail::parse_message_response(response(overflowing_flags.dump())), "/flags"),
+        "message flags reject integer values outside uint64 range");
+
+    check(is_json_error(discordcpp::detail::parse_message_response(response("{"))),
+        "malformed Message JSON is reported as a JSON parse error");
+}
+
 void test_json_errors_and_snowflake_json_representation() {
     auto malformed_response = response(R"({"id":"1","username":)");
     malformed_response.status = 200;
@@ -326,6 +463,7 @@ int main() {
     test_channel_model();
     test_guild_collection_models();
     test_guild_member_model();
+    test_message_model();
     test_json_errors_and_snowflake_json_representation();
 
     if (failures == 0) {

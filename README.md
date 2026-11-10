@@ -139,6 +139,11 @@ The optional REST API component also provides intentionally partial models:
 - `GuildMember`: optional nested `user`, `nick`, and guild `avatar`; required
   `roles`, nullable `joined_at`, `deaf`, and `mute`; optional `premium_since`,
   `pending`, and string `permissions`.
+- `Message`: `id`, `channel_id`, `author`, `content`, `timestamp`, nullable
+  `edited_timestamp`, `tts`, `mention_everyone`, `mentions`, `mention_roles`,
+  `pinned`, and `type`; optional non-nullable `flags`. Message timestamps are
+  retained as strings after RFC 3339 validation. The documented Message object
+  has no `guild_id` field, so this model does not add one.
 
 `GuildMemberModifyRequest` currently supports only `nick` and `roles`. Its
 `Field<T>` members distinguish absent (not sent), null (sent as JSON null), and
@@ -161,6 +166,12 @@ returns channel objects and excludes threads, [`Get Guild Roles`](https://discor
 returns role objects, and [`List Guild Emojis`](https://discord.com/developers/docs/resources/emoji#list-guild-emojis)
 returns emoji objects. The models remain partial; other response fields are
 ignored unless explicitly represented above.
+
+The `Message` model is partial, not a complete representation of every Discord
+message feature. Attachments, embeds, components, stickers, polls, references,
+interaction metadata, and other specialized nested message objects are deferred.
+The library also preserves `content` as returned; Discord may provide an empty
+value when the application does not have access to message content.
 
 Installed consumers link `discordcpp::discordcpp` for the core alone, or add
 `discordcpp::curl_transport` to use `CurlHttpTransport`. The latter target
