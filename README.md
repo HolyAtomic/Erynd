@@ -68,6 +68,15 @@ cmake -S . -B build-rest -DBUILD_TESTING=ON \
 cmake --build build-rest --config Debug
 ```
 
+## Windows CI
+
+GitHub Actions validates the C++20 project on a Windows/MSVC runner in three
+CTest configurations: core only, REST with nlohmann/json, and REST plus Curl.
+The REST configurations install dependencies through the runner's vcpkg using
+the `x64-windows` triplet; CMake enforces nlohmann/json 3.12.0 and libcurl
+7.84.0 or newer. This hosted validation runs independently of local Windows
+execution restrictions.
+
 REST API consumers link `discordcpp::rest_api`; the core remains available as
 `discordcpp::discordcpp`. The API layer composes versioned origin-form paths
 (for example `/api/v10/users/@me`), while the injected transport owns the
@@ -205,6 +214,18 @@ if (message_result.has_value()) {
     // Use message.id, message.content, and other supported fields.
 }
 ```
+
+`delete_message()` deletes one message with
+`DELETE /channels/{channel_id}/messages/{message_id}` and expects Discord's
+empty `204 No Content` success response:
+
+```cpp
+auto deleted = client.delete_message(channel_id, message_id);
+```
+
+For a message in a guild channel, Discord requires `MANAGE_MESSAGES` when the
+message was not sent by the current user. Permission failures remain Discord
+API errors. This operation does not perform bulk deletion.
 
 `GetChannelMessagesRequest` supports `limit` (1–100), and one optional `before`,
 `after`, or `around` Snowflake cursor. If omitted, Discord applies its documented

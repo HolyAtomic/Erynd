@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -690,6 +691,110 @@ void test_get_channel_messages_endpoint() {
             env.transport.request_count() == 2 && env.transport.request_order() == std::vector<std::string>{
                 route_target + "?before=702", route_target + "?after=703" },
             "Get Channel Messages leaves pagination to callers across repeated independent calls");
+    }
+}
+
+void test_delete_message_endpoint() {
+    constexpr std::uint64_t channel_id = 423456789012345678ULL;
+    constexpr std::uint64_t message_id = 923456789012345678ULL;
+    const std::string target = "/api/v10/channels/" + std::to_string(channel_id) +
+        "/messages/" + std::to_string(message_id);
+    {
+        Environment env;
+        env.transport.queue_response(response(204, ""));
+        const auto result = env.client.delete_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::Snowflake{ message_id });
+        const auto requests = env.transport.requests();
+        check(result.has_value(), "Delete Message accepts documented empty HTTP 204 response");
+        check(requests.size() == 1 && requests[0].method == "DELETE" &&
+            requests[0].target == target && requests[0].body.empty(),
+            "Delete Message sends exact API v10 path once without a request body");
+        if (requests.size() == 1) {
+            check(requests[0].headers.find("authorization") ==
+                std::optional<std::string_view>{ "Bot endpoint-test-token" } &&
+                requests[0].headers.find("user-agent").has_value() &&
+                !requests[0].headers.contains("content-type"),
+                "Delete Message uses Authorization and User-Agent without Content-Type");
+        }
+    }
+    for (const auto& [status, body] : std::vector<std::pair<int, std::string>>{
+             { 200, "" }, { 202, "" }, { 204, "unexpected body" } }) {
+        Environment env;
+        env.transport.queue_response(response(status, body));
+        const auto result = env.client.delete_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::Snowflake{ message_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::TransportError>(result.error()) &&
+            std::get<discordcpp::TransportError>(result.error()).category ==
+                discordcpp::TransportFailureCategory::protocol && env.transport.request_count() == 1,
+            "Delete Message rejects unexpected successful status/body as protocol error without replay");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(403,
+            R"json({"code":50013,"message":"Missing Permissions"})json"));
+        const auto result = env.client.delete_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::Snowflake{ message_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::DiscordApiError>(result.error()) &&
+            std::get<discordcpp::DiscordApiError>(result.error()).http_status == 403 &&
+            env.transport.request_count() == 1,
+            "Delete Message preserves Discord permission errors and dispatches once");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(429, R"json({"retry_after":0.25,"global":false})json"));
+        const auto result = env.client.delete_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::Snowflake{ message_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::DiscordApiError>(result.error()) &&
+            std::get<discordcpp::DiscordApiError>(result.error()).http_status == 429 &&
+            env.transport.request_count() == 1,
+            "Delete Message preserves rate-limit API response without retry or replay");
+    }
+    {
+        Environment env;
+        env.transport.queue_error({ discordcpp::TransportFailureCategory::io, "fixture transport failure", true });
+        const auto result = env.client.delete_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::Snowflake{ message_id });
+        check(result.has_error() && std::holds_alternative<discordcpp::TransportError>(result.error()) &&
+            std::get<discordcpp::TransportError>(result.error()).request_may_have_reached_server &&
+            env.transport.request_count() == 1,
+            "Delete Message preserves transport delivery uncertainty without retry");
+    }
+    for (const auto& [channel, message, label] : std::vector<std::tuple<std::uint64_t,
+             std::uint64_t, std::string>>{
+             { 0, message_id, "zero channel ID" }, { channel_id, 0, "zero message ID" } }) {
+        Environment env;
+        const auto result = env.client.delete_message(discordcpp::Snowflake{ channel },
+            discordcpp::Snowflake{ message });
+        check(result.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(result.error()) &&
+            env.transport.request_count() == 0,
+            "Delete Message rejects " + label + " before transport dispatch");
+    }
+    {
+        Environment env;
+        auto limited = response(204, "");
+        set_bucket_capacity(limited, "delete-message-channel-bucket");
+        env.transport.queue_response(std::move(limited));
+        env.transport.queue_response(response(204, ""));
+        auto same_channel = response(204, "");
+        set_bucket_capacity(same_channel, "delete-message-channel-bucket");
+        env.transport.queue_response(std::move(same_channel));
+        constexpr std::uint64_t first_channel = 111;
+        constexpr std::uint64_t other_channel = 222;
+        check(env.client.delete_message(discordcpp::Snowflake{ first_channel },
+            discordcpp::Snowflake{ 333 }).has_value(), "Delete Message observes explicit channel route metadata");
+        check(env.client.delete_message(discordcpp::Snowflake{ other_channel },
+            discordcpp::Snowflake{ 333 }).has_value() && env.scheduler.wait_count() == 0,
+            "Delete Message isolates different typed Channel major resources");
+        check(env.client.delete_message(discordcpp::Snowflake{ first_channel },
+            discordcpp::Snowflake{ 334 }).has_value() && env.scheduler.wait_count() == 1,
+            "Delete Message normalizes message IDs under the Channel major resource");
+        const auto requests = env.transport.requests();
+        check(requests.size() == 3 && env.transport.request_order() == std::vector<std::string>{
+            "/api/v10/channels/111/messages/333", "/api/v10/channels/222/messages/333",
+            "/api/v10/channels/111/messages/334" } &&
+            std::all_of(requests.begin(), requests.end(), [](const auto& request) {
+                return request.method == "DELETE" && request.body.empty();
+            }), "Delete Message dispatches exactly once per call using normalized route metadata");
     }
 }
 
@@ -1518,6 +1623,7 @@ int main() {
     test_guild_member_management_endpoints();
     test_create_message_endpoint();
     test_get_message_endpoint();
+    test_delete_message_endpoint();
     if (failures == 0) {
         std::cout << "Passed " << checks << " Discord REST endpoint checks.\n";
         return 0;

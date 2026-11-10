@@ -205,6 +205,13 @@ public:
         Snowflake message_id, std::optional<SteadyClock::time_point> deadline = std::nullopt,
         std::stop_token cancellation = {}) const;
 
+    /// DELETE /channels/{channel_id}/messages/{message_id}. Discord returns an
+    /// empty HTTP 204 on success. In guild channels, deleting another user's
+    /// message requires MANAGE_MESSAGES. This removes one message only.
+    [[nodiscard]] Result<void, DiscordClientError> delete_message(Snowflake channel_id,
+        Snowflake message_id, std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
     /// GET /channels/{channel_id}/messages. Returns messages newest to oldest.
     /// `before`, `after`, and `around` are mutually exclusive; each call makes
     /// exactly one request. Guild channels require VIEW_CHANNEL. Voice channels

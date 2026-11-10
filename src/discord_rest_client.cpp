@@ -739,6 +739,34 @@ Result<Message, DiscordClientError> DiscordRestClient::get_message(Snowflake cha
     return detail::parse_message_response(response.value());
 }
 
+Result<void, DiscordClientError> DiscordRestClient::delete_message(Snowflake channel_id,
+    Snowflake message_id, std::optional<SteadyClock::time_point> deadline,
+    std::stop_token cancellation) const {
+    if (channel_id.value() == 0 || message_id.value() == 0) {
+        return Result<void, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_snowflake, "channel and message IDs must be non-zero")));
+    }
+
+    DiscordApiPathBuilder path{ config_.api_version };
+    (void)path.append_literal("channels");
+    (void)path.append_snowflake(channel_id);
+    (void)path.append_literal("messages");
+    (void)path.append_snowflake(message_id);
+    const RouteDescriptor route{ "DELETE", "/channels/{channel_id}/messages/{message_id}",
+        { MajorResource{ MajorResourceKind::channel, channel_id.to_string(), 0 } },
+        GlobalLimitClass::ordinary, std::nullopt };
+    auto response = execute_request("DELETE", path, route, {}, {}, deadline, cancellation);
+    if (!response.has_value()) return Result<void, DiscordClientError>::failure(std::move(response).error());
+    if (response.value().status != 204 || !response.value().body.empty()) {
+        return Result<void, DiscordClientError>::failure(DiscordClientError{
+            std::in_place_type<TransportError>,
+            TransportError{ TransportFailureCategory::protocol,
+                "Delete Message requires an empty HTTP 204 response", true }
+        });
+    }
+    return Result<void, DiscordClientError>::success();
+}
+
 Result<std::vector<Message>, DiscordClientError> DiscordRestClient::get_channel_messages(
     Snowflake channel_id, const GetChannelMessagesRequest& request,
     std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const {
