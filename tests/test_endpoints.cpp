@@ -477,6 +477,222 @@ void test_get_message_endpoint() {
     }
 }
 
+void test_get_channel_messages_endpoint() {
+    constexpr std::uint64_t channel_id = 423456789012345678ULL;
+    constexpr std::uint64_t first_message_id = 923456789012345678ULL;
+    constexpr std::uint64_t second_message_id = 923456789012345679ULL;
+    const auto message_with_id = [](std::uint64_t id) {
+        auto json = message_json;
+        const std::string field = "\"id\":\"923456789012345678\"";
+        const auto position = json.find(field);
+        if (position != std::string::npos) json.replace(position, field.size(),
+            "\"id\":\"" + std::to_string(id) + "\"");
+        return json;
+    };
+    const std::string route_target = "/api/v10/channels/" + std::to_string(channel_id) + "/messages";
+
+    {
+        Environment env;
+        env.transport.queue_response(response(200, "[]"));
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, {});
+        const auto requests = env.transport.requests();
+        check(result.has_value() && result.value().empty(),
+            "Get Channel Messages accepts an empty Message array");
+        check(requests.size() == 1 && requests[0].method == "GET" &&
+            requests[0].target == route_target && requests[0].body.empty(),
+            "default Get Channel Messages omits all query parameters and sends exactly one GET");
+        if (requests.size() == 1) {
+            check(requests[0].headers.find("authorization") ==
+                std::optional<std::string_view>{ "Bot endpoint-test-token" } &&
+                requests[0].headers.find("user-agent") == std::optional<std::string_view>{
+                    "Erynd++/0.1.0 (C++ Discord API library)" },
+                "Get Channel Messages uses authenticated Authorization and User-Agent headers");
+        }
+    }
+    {
+        const auto first = message_with_id(first_message_id);
+        const auto second = message_with_id(second_message_id);
+        Environment env;
+        env.transport.queue_response(response(200, "[" + first + "," + second + "]"));
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, {});
+        check(result.has_value() && result.value().size() == 2 &&
+            result.value()[0].id.value() == first_message_id && result.value()[1].id.value() == second_message_id &&
+            result.value()[0].channel_id.value() == channel_id && result.value()[0].content == "hello",
+            "Get Channel Messages fully decodes multiple typed Message elements in response order");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, "[" + message_json + "]"));
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, {});
+        check(result.has_value() && result.value().size() == 1 &&
+            result.value()[0].edited_timestamp.is_null() && result.value()[0].flags.has_value(),
+            "Get Channel Messages preserves Message nullable and optional field semantics");
+    }
+    for (const auto limit : { 1, 100 }) {
+        Environment env;
+        env.transport.queue_response(response(200, "[]"));
+        discordcpp::GetChannelMessagesRequest request;
+        request.limit = limit;
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, request);
+        check(result.has_value() && env.transport.requests().size() == 1 &&
+            env.transport.requests()[0].target == route_target + "?limit=" + std::to_string(limit),
+            "Get Channel Messages serializes valid limit boundary " + std::to_string(limit));
+    }
+    for (const auto limit : { -1, 0, 101 }) {
+        Environment env;
+        discordcpp::GetChannelMessagesRequest request;
+        request.limit = limit;
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, request);
+        check(result.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(result.error()) &&
+            std::get<discordcpp::LocalValidationError>(result.error()).issue ==
+                discordcpp::LocalValidationIssue::invalid_query_parameter && env.transport.request_count() == 0,
+            "Get Channel Messages rejects out-of-range limit before dispatch");
+    }
+    for (const auto [key, cursor] : std::vector<std::pair<std::string, std::uint64_t>>{
+             { "before", 800000000000000001ULL }, { "after", 800000000000000002ULL },
+             { "around", 800000000000000003ULL } }) {
+        Environment env;
+        env.transport.queue_response(response(200, "[]"));
+        discordcpp::GetChannelMessagesRequest request;
+        if (key == "before") request.before = discordcpp::Snowflake{ cursor };
+        else if (key == "after") request.after = discordcpp::Snowflake{ cursor };
+        else request.around = discordcpp::Snowflake{ cursor };
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, request);
+        check(result.has_value() && env.transport.requests().size() == 1 &&
+            env.transport.requests()[0].target == route_target + "?" + key + "=" + std::to_string(cursor),
+            "Get Channel Messages serializes the typed " + key + " cursor as decimal");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, "[]"));
+        discordcpp::GetChannelMessagesRequest request;
+        request.limit = 50;
+        request.before = discordcpp::Snowflake{ 800000000000000004ULL };
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, request);
+        check(result.has_value() && env.transport.requests()[0].target == route_target +
+            "?limit=50&before=800000000000000004",
+            "Get Channel Messages serializes limit then before in stable QueryParameters order");
+    }
+    for (const auto pair : std::array<std::pair<int, int>, 3>{
+             std::pair{ 0, 1 }, std::pair{ 0, 2 }, std::pair{ 1, 2 } }) {
+        Environment env;
+        discordcpp::GetChannelMessagesRequest request;
+        const auto cursor = discordcpp::Snowflake{ 800000000000000005ULL };
+        if (pair.first == 0) request.before = cursor;
+        else if (pair.first == 1) request.after = cursor;
+        else request.around = cursor;
+        if (pair.second == 0) request.before = cursor;
+        else if (pair.second == 1) request.after = cursor;
+        else request.around = cursor;
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, request);
+        check(result.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(result.error()) &&
+            std::get<discordcpp::LocalValidationError>(result.error()).issue ==
+                discordcpp::LocalValidationIssue::invalid_query_parameter && env.transport.request_count() == 0,
+            "Get Channel Messages rejects each pair of mutually exclusive cursors before dispatch");
+    }
+    {
+        Environment env;
+        discordcpp::GetChannelMessagesRequest request;
+        request.after = discordcpp::Snowflake{ 0 };
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, request);
+        check(result.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(result.error()) &&
+            std::get<discordcpp::LocalValidationError>(result.error()).issue ==
+                discordcpp::LocalValidationIssue::invalid_snowflake && env.transport.request_count() == 0,
+            "Get Channel Messages rejects zero pagination Snowflake before dispatch");
+    }
+    {
+        Environment env;
+        discordcpp::GetChannelMessagesRequest request;
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ 0 }, request);
+        check(result.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(result.error()) &&
+            std::get<discordcpp::LocalValidationError>(result.error()).issue ==
+                discordcpp::LocalValidationIssue::invalid_snowflake && env.transport.request_count() == 0,
+            "Get Channel Messages rejects zero channel ID before dispatch");
+    }
+    for (const auto& [body, description] : std::vector<std::pair<std::string, std::string>>{
+             { "{", "malformed JSON" }, { "{}", "a non-array JSON value" },
+             { "[17]", "a non-object collection element" },
+             { "[{\"id\":\"1\"}]", "a malformed Message element" },
+             { "[" + message_json + ",{\"id\":\"1\"}]", "a valid element followed by an invalid element" } }) {
+        Environment env;
+        env.transport.queue_response(response(200, body));
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, {});
+        check(result.has_error() && (std::holds_alternative<discordcpp::JsonParseError>(result.error()) ||
+            std::holds_alternative<discordcpp::ModelValidationError>(result.error())) &&
+            env.transport.request_count() == 1,
+            "Get Channel Messages rejects " + description + " without returning a partial collection");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(404, R"json({"code":10003,"message":"Unknown Channel"})json"));
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, {});
+        check(result.has_error() && std::holds_alternative<discordcpp::DiscordApiError>(result.error()) &&
+            std::get<discordcpp::DiscordApiError>(result.error()).http_status == 404,
+            "Get Channel Messages preserves Discord API errors");
+    }
+    {
+        Environment env;
+        env.transport.queue_error({ discordcpp::TransportFailureCategory::io, "fixture transport failure", true });
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, {});
+        check(result.has_error() && std::holds_alternative<discordcpp::TransportError>(result.error()) &&
+            std::get<discordcpp::TransportError>(result.error()).request_may_have_reached_server &&
+            env.transport.request_count() == 1,
+            "Get Channel Messages preserves transport uncertainty and does not retry");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(429, R"json({"retry_after":1.0,"global":false})json"));
+        const auto result = env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, {});
+        check(result.has_error() && std::holds_alternative<discordcpp::DiscordApiError>(result.error()) &&
+            std::get<discordcpp::DiscordApiError>(result.error()).http_status == 429 &&
+            env.transport.request_count() == 1,
+            "Get Channel Messages preserves rate-limit API errors without automatic retry");
+    }
+    {
+        Environment env;
+        auto learned = response(200, "[]");
+        set_bucket_capacity(learned, "channel-messages-list-bucket");
+        env.transport.queue_response(std::move(learned));
+        env.transport.queue_response(response(200, "[]"));
+        env.transport.queue_response(response(200, "[]"));
+        discordcpp::GetChannelMessagesRequest first_request;
+        first_request.limit = 1;
+        check(env.client.get_channel_messages(discordcpp::Snowflake{ 111 }, first_request).has_value(),
+            "Get Channel Messages learns explicit channel-major route metadata");
+        discordcpp::GetChannelMessagesRequest other_channel;
+        other_channel.limit = 1;
+        other_channel.after = discordcpp::Snowflake{ 700 };
+        check(env.client.get_channel_messages(discordcpp::Snowflake{ 222 }, other_channel).has_value() &&
+            env.scheduler.wait_count() == 0,
+            "Get Channel Messages keeps distinct Channel major resources separate");
+        discordcpp::GetChannelMessagesRequest same_channel;
+        same_channel.limit = 1;
+        same_channel.before = discordcpp::Snowflake{ 701 };
+        check(env.client.get_channel_messages(discordcpp::Snowflake{ 111 }, same_channel).has_value() &&
+            env.scheduler.wait_count() == 1,
+            "Get Channel Messages excludes query cursors from route identity and shares bucket per channel");
+        check(env.transport.request_count() == 3 && env.transport.request_order() == std::vector<std::string>{
+            "/api/v10/channels/111/messages?limit=1",
+            "/api/v10/channels/222/messages?limit=1&after=700",
+            "/api/v10/channels/111/messages?limit=1&before=701" },
+            "Get Channel Messages performs exactly one ordered HTTP request per invocation");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, "[]"));
+        env.transport.queue_response(response(200, "[]"));
+        discordcpp::GetChannelMessagesRequest before;
+        before.before = discordcpp::Snowflake{ 702 };
+        discordcpp::GetChannelMessagesRequest after;
+        after.after = discordcpp::Snowflake{ 703 };
+        check(env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, before).has_value() &&
+            env.client.get_channel_messages(discordcpp::Snowflake{ channel_id }, after).has_value() &&
+            env.transport.request_count() == 2 && env.transport.request_order() == std::vector<std::string>{
+                route_target + "?before=702", route_target + "?after=703" },
+            "Get Channel Messages leaves pagination to callers across repeated independent calls");
+    }
+}
+
 template<typename Model, typename Call, typename Validate>
 void exercise_guild_collection_endpoint(std::string_view endpoint, std::string_view path_suffix,
     std::string_view body, std::string_view malformed_element_body, Call call, Validate validate_models) {

@@ -27,6 +27,8 @@ using Json = nlohmann::json;
     const HttpResponse& response);
 [[nodiscard]] Result<std::vector<Emoji>, DiscordClientError> parse_emoji_collection_response(
     const HttpResponse& response);
+[[nodiscard]] Result<std::vector<Message>, DiscordClientError> parse_message_collection_response(
+    const HttpResponse& response);
 
 /// Internal JSON value conversion used by request serializers in later steps.
 [[nodiscard]] Json serialize_snowflake(const Snowflake& value);

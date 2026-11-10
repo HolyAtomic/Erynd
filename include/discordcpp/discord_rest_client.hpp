@@ -205,6 +205,15 @@ public:
         Snowflake message_id, std::optional<SteadyClock::time_point> deadline = std::nullopt,
         std::stop_token cancellation = {}) const;
 
+    /// GET /channels/{channel_id}/messages. Returns messages newest to oldest.
+    /// `before`, `after`, and `around` are mutually exclusive; each call makes
+    /// exactly one request. Guild channels require VIEW_CHANNEL. Voice channels
+    /// also require CONNECT; without READ_MESSAGE_HISTORY Discord returns no messages.
+    [[nodiscard]] Result<std::vector<Message>, DiscordClientError> get_channel_messages(
+        Snowflake channel_id, const GetChannelMessagesRequest& request,
+        std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
 private:
     [[nodiscard]] Result<HttpResponse, DiscordClientError> execute_get(
         const DiscordApiPathBuilder& path, const RouteDescriptor& route,
@@ -212,7 +221,8 @@ private:
     [[nodiscard]] Result<HttpResponse, DiscordClientError> execute_request(
         std::string_view method, const DiscordApiPathBuilder& path, const RouteDescriptor& route,
         const Headers& headers, std::string body,
-        std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const;
+        std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation,
+        const QueryParameters* query = nullptr) const;
 
     RestClient& rest_client_;
     RateLimitCoordinator& coordinator_;

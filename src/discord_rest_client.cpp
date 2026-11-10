@@ -384,8 +384,11 @@ Result<HttpResponse, DiscordClientError> DiscordRestClient::execute_get(
 Result<HttpResponse, DiscordClientError> DiscordRestClient::execute_request(
     std::string_view method, const DiscordApiPathBuilder& path, const RouteDescriptor& route,
     const Headers& headers, std::string body,
-    std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const {
-    auto request = build_request(method, path, headers, std::move(body), deadline);
+    std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation,
+    const QueryParameters* query) const {
+    auto request = query
+        ? build_request_with_query(method, path, *query, headers, std::move(body), deadline)
+        : build_request(method, path, headers, std::move(body), deadline);
     if (!request.has_value()) {
         return Result<HttpResponse, DiscordClientError>::failure(std::move(request).error());
     }
@@ -734,6 +737,64 @@ Result<Message, DiscordClientError> DiscordRestClient::get_message(Snowflake cha
     auto response = execute_get(path, route, deadline, cancellation);
     if (!response.has_value()) return Result<Message, DiscordClientError>::failure(std::move(response).error());
     return detail::parse_message_response(response.value());
+}
+
+Result<std::vector<Message>, DiscordClientError> DiscordRestClient::get_channel_messages(
+    Snowflake channel_id, const GetChannelMessagesRequest& request,
+    std::optional<SteadyClock::time_point> deadline, std::stop_token cancellation) const {
+    if (channel_id.value() == 0) {
+        return Result<std::vector<Message>, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_snowflake, "channel ID must be non-zero")));
+    }
+    if (request.limit && (*request.limit < 1 || *request.limit > 100)) {
+        return Result<std::vector<Message>, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_query_parameter, "message limit must be in the range 1 through 100")));
+    }
+    const unsigned cursor_count = static_cast<unsigned>(request.before.has_value()) +
+        static_cast<unsigned>(request.after.has_value()) + static_cast<unsigned>(request.around.has_value());
+    if (cursor_count > 1) {
+        return Result<std::vector<Message>, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_query_parameter,
+            "before, after, and around are mutually exclusive")));
+    }
+
+    QueryParameters query;
+    if (request.limit) {
+        auto added = query.add("limit", *request.limit);
+        if (!added.has_value()) return Result<std::vector<Message>, DiscordClientError>::failure(as_local(
+            std::move(added).error()));
+    }
+    const auto add_cursor = [&query](std::string_view name,
+        const std::optional<Snowflake>& cursor) -> Result<void, LocalValidationError> {
+        if (!cursor) return Result<void, LocalValidationError>::success();
+        if (cursor->value() == 0) {
+            return Result<void, LocalValidationError>::failure(local_error(
+                LocalValidationIssue::invalid_snowflake, "message pagination cursor must be non-zero"));
+        }
+        return query.add(name, cursor->to_string());
+    };
+    auto before = add_cursor("before", request.before);
+    if (!before.has_value()) return Result<std::vector<Message>, DiscordClientError>::failure(as_local(
+        std::move(before).error()));
+    auto after = add_cursor("after", request.after);
+    if (!after.has_value()) return Result<std::vector<Message>, DiscordClientError>::failure(as_local(
+        std::move(after).error()));
+    auto around = add_cursor("around", request.around);
+    if (!around.has_value()) return Result<std::vector<Message>, DiscordClientError>::failure(as_local(
+        std::move(around).error()));
+
+    DiscordApiPathBuilder path{ config_.api_version };
+    (void)path.append_literal("channels");
+    (void)path.append_snowflake(channel_id);
+    (void)path.append_literal("messages");
+    const RouteDescriptor route{ "GET", "/channels/{channel_id}/messages",
+        { MajorResource{ MajorResourceKind::channel, channel_id.to_string(), 0 } },
+        GlobalLimitClass::ordinary, std::nullopt };
+    auto response = execute_request("GET", path, route, {}, {}, deadline, cancellation, &query);
+    if (!response.has_value()) {
+        return Result<std::vector<Message>, DiscordClientError>::failure(std::move(response).error());
+    }
+    return detail::parse_message_collection_response(response.value());
 }
 
 Result<HttpRequest, DiscordClientError> DiscordRestClient::build_request(

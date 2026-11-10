@@ -4,6 +4,7 @@
 #include <discordcpp/snowflake.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -124,6 +125,16 @@ struct Message final {
 /// values. Other Discord message payload fields are intentionally unsupported.
 struct CreateMessageRequest final {
     std::string content;
+};
+
+/// Query for GET /channels/{channel_id}/messages. The server defaults `limit`
+/// to 50; values must be in [1, 100]. At most one cursor may be supplied.
+/// Omitted fields stay absent from the serialized query string.
+struct GetChannelMessagesRequest final {
+    std::optional<std::int32_t> limit;
+    std::optional<Snowflake> before;
+    std::optional<Snowflake> after;
+    std::optional<Snowflake> around;
 };
 
 } // namespace discordcpp

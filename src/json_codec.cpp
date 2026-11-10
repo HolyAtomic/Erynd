@@ -723,6 +723,10 @@ Result<std::vector<Emoji>, DiscordClientError> parse_emoji_collection_response(c
     return parse_collection_response<Emoji>(response, parse_emoji_response);
 }
 
+Result<std::vector<Message>, DiscordClientError> parse_message_collection_response(const HttpResponse& response) {
+    return parse_collection_response<Message>(response, parse_message_response);
+}
+
 Json serialize_snowflake(const Snowflake& value) {
     return Json(value.to_string());
 }

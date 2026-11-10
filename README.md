@@ -206,6 +206,24 @@ if (message_result.has_value()) {
 }
 ```
 
+`GetChannelMessagesRequest` supports `limit` (1–100), and one optional `before`,
+`after`, or `around` Snowflake cursor. If omitted, Discord applies its documented
+default limit of 50. The three cursors are mutually exclusive. Results arrive
+newest to oldest; callers control pagination and each invocation performs one
+HTTP request, with no automatic follow-up calls:
+
+```cpp
+discordcpp::GetChannelMessagesRequest page;
+page.limit = 100;
+page.before = last_message_id;
+auto messages = client.get_channel_messages(channel_id, page);
+```
+
+Discord requires `VIEW_CHANNEL` in guild channels and `CONNECT` in voice
+channels. If `READ_MESSAGE_HISTORY` is missing, Discord documents that no
+messages are returned. The response uses the partial `Message` model described
+above.
+
 Installed consumers link `discordcpp::discordcpp` for the core alone, or add
 `discordcpp::curl_transport` to use `CurlHttpTransport`. The latter target
 requires libcurl to be installed for the consumer as well. Curl transport URLs
