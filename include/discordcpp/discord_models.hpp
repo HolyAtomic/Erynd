@@ -119,4 +119,11 @@ struct Message final {
     Field<std::uint64_t> flags;
 };
 
+/// Focused text-only request for POST /channels/{channel_id}/messages.
+/// Content must be non-empty, valid UTF-8, and at most 2,000 Unicode scalar
+/// values. Other Discord message payload fields are intentionally unsupported.
+struct CreateMessageRequest final {
+    std::string content;
+};
+
 } // namespace discordcpp

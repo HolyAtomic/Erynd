@@ -173,6 +173,22 @@ interaction metadata, and other specialized nested message objects are deferred.
 The library also preserves `content` as returned; Discord may provide an empty
 value when the application does not have access to message content.
 
+`CreateMessageRequest` currently supports text content only. `create_message()`
+validates non-empty UTF-8 content containing at most 2,000 Unicode scalar values,
+then synchronously sends `POST /channels/{channel_id}/messages` and decodes the
+returned partial `Message`. For example:
+
+```cpp
+discordcpp::CreateMessageRequest request{ "Hello, Discord!" };
+auto result = client.create_message(discordcpp::Snowflake{ channel_id }, request);
+```
+
+Discord requires `SEND_MESSAGES` in guild channels; the server remains the
+authority for permission checks. This operation never retries or replays a POST,
+and a transport timeout can occur after Discord has created the message. Embeds,
+attachments, components, stickers, polls, references, and other message request
+fields are not supported yet.
+
 Installed consumers link `discordcpp::discordcpp` for the core alone, or add
 `discordcpp::curl_transport` to use `CurlHttpTransport`. The latter target
 requires libcurl to be installed for the consumer as well. Curl transport URLs

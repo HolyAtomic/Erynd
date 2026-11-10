@@ -130,6 +130,42 @@ bool valid_request_header_value(std::string_view value) noexcept {
     });
 }
 
+bool valid_utf8_within_message_limit(std::string_view value) noexcept {
+    std::size_t scalar_count{};
+    for (std::size_t index = 0; index < value.size();) {
+        const auto lead = static_cast<unsigned char>(value[index]);
+        std::uint32_t code_point{};
+        std::size_t sequence_length{};
+        if (lead <= 0x7f) {
+            code_point = lead;
+            sequence_length = 1;
+        } else if (lead >= 0xc2 && lead <= 0xdf) {
+            code_point = lead & 0x1f;
+            sequence_length = 2;
+        } else if (lead >= 0xe0 && lead <= 0xef) {
+            code_point = lead & 0x0f;
+            sequence_length = 3;
+        } else if (lead >= 0xf0 && lead <= 0xf4) {
+            code_point = lead & 0x07;
+            sequence_length = 4;
+        } else {
+            return false;
+        }
+        if (sequence_length > value.size() - index) return false;
+        for (std::size_t offset = 1; offset < sequence_length; ++offset) {
+            const auto continuation = static_cast<unsigned char>(value[index + offset]);
+            if ((continuation & 0xc0) != 0x80) return false;
+            code_point = (code_point << 6) | (continuation & 0x3f);
+        }
+        if ((sequence_length == 3 && code_point < 0x800) ||
+            (sequence_length == 4 && code_point < 0x10000) ||
+            (code_point >= 0xd800 && code_point <= 0xdfff) || code_point > 0x10ffff) return false;
+        if (++scalar_count > 2000) return false;
+        index += sequence_length;
+    }
+    return true;
+}
+
 bool reserved_header(std::string_view name) noexcept {
     const auto equal_ascii = [name](std::string_view expected) {
         if (name.size() != expected.size()) return false;
@@ -631,6 +667,52 @@ Result<GuildMember, DiscordClientError> DiscordRestClient::modify_guild_member(S
         });
     }
     return detail::parse_guild_member_response(response.value());
+}
+
+Result<Message, DiscordClientError> DiscordRestClient::create_message(Snowflake channel_id,
+    const CreateMessageRequest& request, std::optional<SteadyClock::time_point> deadline,
+    std::stop_token cancellation) const {
+    if (channel_id.value() == 0) {
+        return Result<Message, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_snowflake, "channel ID must be non-zero")));
+    }
+    if (request.content.empty()) {
+        return Result<Message, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_request_body, "text message content must not be empty")));
+    }
+    if (!valid_utf8_within_message_limit(request.content)) {
+        return Result<Message, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_request_body,
+            "message content must be valid UTF-8 and contain at most 2000 Unicode scalar values")));
+    }
+
+    std::string body;
+    try {
+        body = detail::encode_create_message_request(request);
+    } catch (...) {
+        return Result<Message, DiscordClientError>::failure(as_local(local_error(
+            LocalValidationIssue::invalid_request_body, "CreateMessage request body could not be encoded")));
+    }
+
+    Headers headers;
+    headers.add("Content-Type", "application/json");
+    DiscordApiPathBuilder path{ config_.api_version };
+    (void)path.append_literal("channels");
+    (void)path.append_snowflake(channel_id);
+    (void)path.append_literal("messages");
+    const RouteDescriptor route{ "POST", "/channels/{channel_id}/messages",
+        { MajorResource{ MajorResourceKind::channel, channel_id.to_string(), 0 } },
+        GlobalLimitClass::ordinary, std::nullopt };
+    auto response = execute_request("POST", path, route, headers, std::move(body), deadline, cancellation);
+    if (!response.has_value()) return Result<Message, DiscordClientError>::failure(std::move(response).error());
+    if (response.value().status != 200) {
+        return Result<Message, DiscordClientError>::failure(DiscordClientError{
+            std::in_place_type<TransportError>,
+            TransportError{ TransportFailureCategory::protocol,
+                "Create Message requires an HTTP 200 response with a Message body", true }
+        });
+    }
+    return detail::parse_message_response(response.value());
 }
 
 Result<HttpRequest, DiscordClientError> DiscordRestClient::build_request(

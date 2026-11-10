@@ -140,6 +140,172 @@ const std::string modified_guild_member_json = R"json({
     "user":{"id":"823456789012345678","username":"member"},"nick":"renamed",
     "roles":["523456789012345679"],"joined_at":null,"deaf":false,"mute":false
 })json";
+const std::string message_json = R"json({
+    "id":"923456789012345678","channel_id":"423456789012345678",
+    "author":{"id":"123456789012345678","username":"erynd","bot":true},
+    "content":"hello","timestamp":"2025-03-04T05:06:07.123Z",
+    "edited_timestamp":null,"tts":false,"mention_everyone":false,
+    "mentions":[],"mention_roles":[],"pinned":false,"type":0,"flags":0
+})json";
+
+void test_create_message_endpoint() {
+    constexpr std::uint64_t channel_id = 423456789012345678ULL;
+    const std::string expected_target = "/api/v10/channels/" + std::to_string(channel_id) + "/messages";
+    {
+        Environment env;
+        env.transport.queue_response(response(200, message_json));
+        const discordcpp::CreateMessageRequest request{ "hello \"Discord\" 🌠" };
+        const auto result = env.client.create_message(discordcpp::Snowflake{ channel_id }, request);
+        check(result.has_value() && result.value().id.value() == 923456789012345678ULL &&
+            result.value().channel_id.value() == channel_id && result.value().author.username == "erynd" &&
+            result.value().content == "hello", "Create Message decodes the returned typed Message");
+        const auto requests = env.transport.requests();
+        check(requests.size() == 1 && requests[0].method == "POST" && requests[0].target == expected_target,
+            "Create Message sends POST to the exact API v10 path");
+        if (requests.size() == 1) {
+            check(requests[0].headers.find("authorization") ==
+                std::optional<std::string_view>{ "Bot endpoint-test-token" } &&
+                requests[0].headers.find("user-agent").has_value() &&
+                requests[0].headers.find("content-type") ==
+                std::optional<std::string_view>{ "application/json" },
+                "Create Message uses authenticated headers and JSON content type");
+            check(requests[0].body == R"json({"content":"hello \"Discord\" 🌠"})json",
+                "Create Message serializes only the supported content field with JSON escaping");
+        }
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, message_json));
+        check(env.client.create_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::CreateMessageRequest{ "snowman ☃️, rocket 🚀" }).has_value(),
+            "Create Message accepts valid multibyte UTF-8 content");
+    }
+    {
+        Environment env;
+        std::string unicode_content;
+        for (int index = 0; index < 1000; ++index) unicode_content += "🚀";
+        env.transport.queue_response(response(200, message_json));
+        check(env.client.create_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::CreateMessageRequest{ std::move(unicode_content) }).has_value(),
+            "Create Message counts Unicode scalar values rather than UTF-8 bytes");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, message_json));
+        check(env.client.create_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::CreateMessageRequest{ std::string(2000, 'x') }).has_value(),
+            "Create Message accepts content at the 2000 Unicode scalar limit");
+    }
+    for (const auto& [content, description] : std::vector<std::pair<std::string, std::string>>{
+             { "", "empty content" },
+             { std::string(2001, 'x'), "content beyond the documented limit" },
+             { std::string{ "\xC0\xAF", 2 }, "overlong UTF-8" },
+             { std::string{ "\x80", 1 }, "orphan UTF-8 continuation" },
+             { std::string{ "\xE2\x82", 2 }, "truncated UTF-8 sequence" },
+             { std::string{ "\xED\xA0\x80", 3 }, "UTF-8 encoded surrogate" },
+             { std::string{ "\xF4\x90\x80\x80", 4 }, "code point above Unicode range" } }) {
+        Environment env;
+        const auto result = env.client.create_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::CreateMessageRequest{ content });
+        check(result.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(result.error()) &&
+            std::get<discordcpp::LocalValidationError>(result.error()).issue ==
+                discordcpp::LocalValidationIssue::invalid_request_body && env.transport.request_count() == 0,
+            "Create Message rejects " + description + " before dispatch");
+    }
+    {
+        Environment env;
+        const auto result = env.client.create_message(discordcpp::Snowflake{ 0 },
+            discordcpp::CreateMessageRequest{ "hello" });
+        check(result.has_error() && std::holds_alternative<discordcpp::LocalValidationError>(result.error()) &&
+            std::get<discordcpp::LocalValidationError>(result.error()).issue ==
+                discordcpp::LocalValidationIssue::invalid_snowflake && env.transport.request_count() == 0,
+            "Create Message rejects zero channel ID before dispatch");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, ""));
+        const auto result = env.client.create_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::CreateMessageRequest{ "hello" });
+        check(result.has_error() && std::holds_alternative<discordcpp::JsonParseError>(result.error()),
+            "Create Message rejects an empty successful response instead of returning a partial Message");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, "{"));
+        const auto result = env.client.create_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::CreateMessageRequest{ "hello" });
+        check(result.has_error() && std::holds_alternative<discordcpp::JsonParseError>(result.error()),
+            "Create Message preserves malformed JSON response errors");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(200, R"json({"id":"1"})json"));
+        const auto result = env.client.create_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::CreateMessageRequest{ "hello" });
+        check(result.has_error() && std::holds_alternative<discordcpp::ModelValidationError>(result.error()),
+            "Create Message rejects incomplete returned Message schemas");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(201, message_json));
+        const auto result = env.client.create_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::CreateMessageRequest{ "hello" });
+        check(result.has_error() && std::holds_alternative<discordcpp::TransportError>(result.error()) &&
+            std::get<discordcpp::TransportError>(result.error()).category ==
+                discordcpp::TransportFailureCategory::protocol,
+            "Create Message rejects unexpected successful HTTP status instead of decoding it");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(403, R"json({"code":50013,"message":"Missing Permissions"})json"));
+        const auto result = env.client.create_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::CreateMessageRequest{ "hello" });
+        check(result.has_error() && std::holds_alternative<discordcpp::DiscordApiError>(result.error()) &&
+            std::get<discordcpp::DiscordApiError>(result.error()).http_status == 403,
+            "Create Message preserves Discord permission errors as API errors");
+    }
+    {
+        Environment env;
+        env.transport.queue_error({ discordcpp::TransportFailureCategory::timeout,
+            "fixture timeout", true });
+        const auto result = env.client.create_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::CreateMessageRequest{ "hello" });
+        check(result.has_error() && std::holds_alternative<discordcpp::TransportError>(result.error()) &&
+            std::get<discordcpp::TransportError>(result.error()).request_may_have_reached_server,
+            "Create Message preserves uncertain transport failure without replay");
+        check(env.transport.request_count() == 1, "Create Message dispatches a POST at most once");
+    }
+    {
+        Environment env;
+        env.transport.queue_response(response(429, R"json({"retry_after":"invalid"})json"));
+        const auto result = env.client.create_message(discordcpp::Snowflake{ channel_id },
+            discordcpp::CreateMessageRequest{ "hello" });
+        check(result.has_error() && std::holds_alternative<discordcpp::RateLimitMetadataError>(result.error()),
+            "Create Message preserves malformed rate-limit metadata errors");
+    }
+    {
+        Environment env;
+        auto limited = response(200, message_json);
+        set_bucket_capacity(limited, "create-message-channel-bucket");
+        env.transport.queue_response(std::move(limited));
+        env.transport.queue_response(response(200, message_json));
+        auto same_channel = response(200, message_json);
+        set_bucket_capacity(same_channel, "create-message-channel-bucket");
+        env.transport.queue_response(std::move(same_channel));
+        check(env.client.create_message(discordcpp::Snowflake{ 111 },
+            discordcpp::CreateMessageRequest{ "first" }).has_value(),
+            "Create Message dispatches with explicit channel-major route metadata");
+        check(env.client.create_message(discordcpp::Snowflake{ 222 },
+            discordcpp::CreateMessageRequest{ "other channel" }).has_value() && env.scheduler.wait_count() == 0,
+            "Create Message rate-limit bucket keeps different channel major IDs separate");
+        check(env.client.create_message(discordcpp::Snowflake{ 111 },
+            discordcpp::CreateMessageRequest{ "same channel" }).has_value() && env.scheduler.wait_count() == 1,
+            "Create Message route shares discovered bucket for the same channel major ID");
+        check(env.transport.request_order() == std::vector<std::string>{
+            "/api/v10/channels/111/messages", "/api/v10/channels/222/messages", "/api/v10/channels/111/messages" },
+            "Create Message preserves deterministic dispatch order");
+    }
+}
 
 template<typename Model, typename Call, typename Validate>
 void exercise_guild_collection_endpoint(std::string_view endpoint, std::string_view path_suffix,
@@ -964,6 +1130,7 @@ int main() {
     test_guild_member_endpoint();
     test_guild_role_endpoint();
     test_guild_member_management_endpoints();
+    test_create_message_endpoint();
     if (failures == 0) {
         std::cout << "Passed " << checks << " Discord REST endpoint checks.\n";
         return 0;

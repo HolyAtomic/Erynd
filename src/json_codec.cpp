@@ -647,6 +647,12 @@ Result<Message, DiscordClientError> parse_message_response(const HttpResponse& r
     });
 }
 
+std::string encode_create_message_request(const CreateMessageRequest& request) {
+    Json object = Json::object();
+    object["content"] = request.content;
+    return object.dump();
+}
+
 std::string encode_guild_member_modify_request(const GuildMemberModifyRequest& request) {
     Json object = Json::object();
     const auto encode_string_field = [&object](std::string_view key, const Field<std::string>& field) {

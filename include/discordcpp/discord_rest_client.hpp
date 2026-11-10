@@ -190,6 +190,14 @@ public:
         std::optional<SteadyClock::time_point> deadline = std::nullopt,
         std::stop_token cancellation = {}) const;
 
+    /// POST /channels/{channel_id}/messages. Supports text content only and
+    /// returns the created partial Message. In guild channels Discord requires
+    /// SEND_MESSAGES. This synchronous operation never retries or replays a POST.
+    [[nodiscard]] Result<Message, DiscordClientError> create_message(Snowflake channel_id,
+        const CreateMessageRequest& request,
+        std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
 private:
     [[nodiscard]] Result<HttpResponse, DiscordClientError> execute_get(
         const DiscordApiPathBuilder& path, const RouteDescriptor& route,
