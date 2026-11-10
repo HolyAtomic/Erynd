@@ -189,6 +189,23 @@ and a transport timeout can occur after Discord has created the message. Embeds,
 attachments, components, stickers, polls, references, and other message request
 fields are not supported yet.
 
+`get_message()` retrieves one message and returns `Result<Message,
+DiscordClientError>`. Discord documents `VIEW_CHANNEL` and
+`READ_MESSAGE_HISTORY` for guild channels, and additionally `CONNECT` for voice
+channels. Non-success HTTP responses remain Discord API errors; transport,
+rate-limit metadata, JSON, and model validation failures keep their distinct
+error alternatives. The numeric 2xx status is not specified on the endpoint
+reference page, so the method uses the existing RestClient 2xx handling and
+validates the body with the partial Message codec.
+
+```cpp
+auto message_result = client.get_message(channel_id, message_id);
+if (message_result.has_value()) {
+    const auto& message = message_result.value();
+    // Use message.id, message.content, and other supported fields.
+}
+```
+
 Installed consumers link `discordcpp::discordcpp` for the core alone, or add
 `discordcpp::curl_transport` to use `CurlHttpTransport`. The latter target
 requires libcurl to be installed for the consumer as well. Curl transport URLs

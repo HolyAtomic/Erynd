@@ -198,6 +198,13 @@ public:
         std::optional<SteadyClock::time_point> deadline = std::nullopt,
         std::stop_token cancellation = {}) const;
 
+    /// GET /channels/{channel_id}/messages/{message_id}. In guild channels,
+    /// Discord requires VIEW_CHANNEL and READ_MESSAGE_HISTORY; voice channels
+    /// also require CONNECT. Returns the supported partial Message model.
+    [[nodiscard]] Result<Message, DiscordClientError> get_message(Snowflake channel_id,
+        Snowflake message_id, std::optional<SteadyClock::time_point> deadline = std::nullopt,
+        std::stop_token cancellation = {}) const;
+
 private:
     [[nodiscard]] Result<HttpResponse, DiscordClientError> execute_get(
         const DiscordApiPathBuilder& path, const RouteDescriptor& route,
